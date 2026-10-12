@@ -153,7 +153,7 @@ export class SupabaseRepo implements TripRepository {
     return {
       trip: { ...t, fx_rate: Number(t.fx_rate) },
       participants: check(participants) as Participant[],
-      spots: (check(spots) as Spot[]).map((s) => ({ ...s, est_cost: num(s.est_cost) })),
+      spots: check(spots) as Spot[],
       items: check(items) as SpotItem[],
       expenses: (check(expenses) as Expense[]).map((e) => ({ ...e, amount: Number(e.amount) })),
       shares: (check(shares) as ExpenseShare[]).map((s) => ({ ...s, amount: num(s.amount) })),
@@ -200,8 +200,7 @@ export class SupabaseRepo implements TripRepository {
 
   async createSpot(input: SpotInput) {
     const trip_id = this.requireTrip()
-    const s = check(await this.sb.from('spots').insert({ ...input, trip_id }).select().single()) as Spot
-    return { ...s, est_cost: num(s.est_cost) }
+    return check(await this.sb.from('spots').insert({ ...input, trip_id }).select().single()) as Spot
   }
 
   async updateSpot(id: Id, version: number, patch: SpotPatch) {

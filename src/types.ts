@@ -45,7 +45,6 @@ export interface Spot {
   map_url: string
   note: string
   /** 預估花費，以旅程的當地幣別計 */
-  est_cost: number | null
   sort_key: number
   version: number
   created_at: string
@@ -127,7 +126,7 @@ export type TripPatch = Partial<TripInput>
 
 export type SpotInput = Pick<
   Spot,
-  'category' | 'booking' | 'day' | 'start_time' | 'title' | 'address' | 'map_url' | 'note' | 'est_cost' | 'sort_key'
+  'category' | 'booking' | 'day' | 'start_time' | 'title' | 'address' | 'map_url' | 'note' | 'sort_key'
 >
 export type SpotPatch = Partial<SpotInput>
 

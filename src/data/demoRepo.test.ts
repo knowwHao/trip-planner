@@ -28,7 +28,7 @@ describe('DemoRepo', () => {
     repo.setToken(null)
     await expect(repo.loadTrip()).rejects.toBeInstanceOf(InvalidTokenError)
     repo.setToken('x'.repeat(64))
-    await expect(repo.createSpot({ category: 'sight', booking: null, day: 1, start_time: null, title: 'x', address: '', map_url: '', note: '', est_cost: null, sort_key: 1 })).rejects.toBeInstanceOf(InvalidTokenError)
+    await expect(repo.createSpot({ category: 'sight', booking: null, day: 1, start_time: null, title: 'x', address: '', map_url: '', note: '', sort_key: 1 })).rejects.toBeInstanceOf(InvalidTokenError)
   })
 
   it('旅伴去重、略過空白', async () => {
@@ -38,7 +38,7 @@ describe('DemoRepo', () => {
 
   it('景點改內容加版本、搬動不加，舊版本更新是衝突', async () => {
     const { repo } = await setup()
-    const s = await repo.createSpot({ category: 'sight', booking: null, day: 1, start_time: null, title: '大阪城', address: '', map_url: '', note: '', est_cost: null, sort_key: 1 })
+    const s = await repo.createSpot({ category: 'sight', booking: null, day: 1, start_time: null, title: '大阪城', address: '', map_url: '', note: '', sort_key: 1 })
     await repo.moveSpots([{ id: s.id, day: 2, sort_key: 5 }])
     expect((await repo.loadTrip()).spots[0]).toMatchObject({ day: 2, version: 1 })
     await repo.updateSpot(s.id, 1, { title: '通天閣' })
@@ -48,7 +48,7 @@ describe('DemoRepo', () => {
 
   it('一次搬動多個景點全部生效', async () => {
     const { repo } = await setup()
-    const base = { category: 'sight' as const, booking: null, day: 1, start_time: null, address: '', map_url: '', note: '', est_cost: null }
+    const base = { category: 'sight' as const, booking: null, day: 1, start_time: null, address: '', map_url: '', note: '' }
     const a = await repo.createSpot({ ...base, title: 'A', sort_key: 1 })
     const b = await repo.createSpot({ ...base, title: 'B', sort_key: 2 })
     await repo.moveSpots([
@@ -82,7 +82,7 @@ describe('DemoRepo', () => {
 
   it('子項目：打勾不加版本、改內容加版本、刪行程連帶刪除', async () => {
     const { repo } = await setup()
-    const spot = await repo.createSpot({ category: 'shop', booking: null, day: 1, start_time: null, title: '銀座', address: '', map_url: '', note: '', est_cost: null, sort_key: 1 })
+    const spot = await repo.createSpot({ category: 'shop', booking: null, day: 1, start_time: null, title: '銀座', address: '', map_url: '', note: '', sort_key: 1 })
     const item = await repo.createItem({ spot_id: spot.id, title: 'UNIQLO', address: '', map_url: '', note: '', sort_key: 1 })
     await repo.setItemDone(item.id, true)
     expect((await repo.loadTrip()).items[0]).toMatchObject({ done: true, version: 1 })

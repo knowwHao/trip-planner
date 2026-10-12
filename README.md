@@ -128,7 +128,7 @@ npm run build      # 型別檢查 + 打包到 dist/
 
 1. 到 [supabase.com](https://supabase.com) 建立新專案（Free 方案即可，每個帳號可同時有 2 個免費專案），記下資料庫密碼。本專案是東京區的 `trip-planner`。
 2. 左側 **SQL Editor** → New query，把 [`supabase/schema.sql`](supabase/schema.sql) 整份貼上執行。這份 SQL 可以重複執行，之後改版也是貼整份再跑一次，會建立：
-   - 資料表 `trips`、`participants`、`spots`（含類型 `category`、預約狀態 `booking`；`est_cost` 是舊版的預估花費，畫面已不使用）、`spot_items`（子項目）、`expenses`（含實際扣款 `twd_amount`）、`expense_shares`、`transfers`，以及外鍵、索引；後來加的欄位以 `add column if not exists` 寫在一起，舊資料庫重跑整份就會升級；子表參照旅伴、景點、旅費一律用帶 `trip_id` 的複合外鍵，不可能把別趟旅程的資料掛進來
+   - 資料表 `trips`、`participants`、`spots`（含類型 `category`、預約狀態 `booking`）、`spot_items`（子項目）、`expenses`（含實際扣款 `twd_amount`）、`expense_shares`、`transfers`，以及外鍵、索引；後來加的欄位以 `add column if not exists` 寫在一起，舊資料庫重跑整份就會升級；子表參照旅伴、景點、旅費一律用帶 `trip_id` 的複合外鍵，不可能把別趟旅程的資料掛進來
    - `trips.token`：旅程連結用的隨機 token（244 bit），建立旅程時自動產生
    - RLS：每張表都要帶正確 token 才能讀寫，而且只碰得到那一趟；沒帶或帶錯時 select 是 0 筆、寫入被擋；`truncate` 權限已收回
    - `current_trip_id()`：RLS 用的檢查函式，從請求的 `x-trip-token` header 找出對應的旅程

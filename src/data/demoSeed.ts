@@ -44,7 +44,6 @@ export function seedDemoTrip() {
     address: '',
     map_url: '',
     note: '',
-    est_cost: null,
     sort_key: (i + 1) * SORT_STEP,
     version: 1,
     created_at: t,

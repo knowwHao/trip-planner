@@ -122,7 +122,7 @@ async function submit() {
   saving.value = true
   try {
     if (!base.value) {
-      const input: SpotInput = { ...content, est_cost: null, day, sort_key: keyAfter(lastKey(day)) }
+      const input: SpotInput = { ...content, day, sort_key: keyAfter(lastKey(day)) }
       await store.mutate(() => repo.createSpot(input))
       emit('close')
       return

@@ -76,8 +76,6 @@ create table if not exists public.spots (
   -- 只收 http(s)，避免 javascript: 之類的連結被點開
   map_url    text not null default '' check (length(map_url) <= 1000 and (map_url = '' or map_url ~* '^https?://')),
   note       text not null default '' check (length(note) <= 2000),
-  -- 預估花費，以旅程的當地幣別計
-  est_cost   numeric(14, 2) check (est_cost >= 0 and est_cost < 100000000),
   -- 同一天內的排序；搬動時取前後兩個的中間值，只改被搬的那一筆
   sort_key   double precision not null default 0,
   version    int not null default 1,
@@ -186,6 +184,9 @@ alter table public.spots
 -- 預約狀態：done 已訂／已買、todo 還沒、none 不需要；null 是沒設定，畫面文字依類型而定
 alter table public.spots
   add column if not exists booking text check (booking in ('done', 'todo', 'none'));
+
+-- 舊版的預估花費，行程畫面已拿掉不用
+alter table public.spots drop column if exists est_cost;
 
 -- 外幣旅費的實際扣款（新台幣，例如信用卡帳單金額），有填時這筆用它換算而不用旅程匯率
 alter table public.expenses

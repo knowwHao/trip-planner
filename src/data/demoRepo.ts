@@ -81,6 +81,8 @@ function readStorage(): DemoDb | null {
     for (const s of db.spots) {
       s.category ??= 'sight'
       s.booking ??= null
+      // 與 schema.sql 一樣拿掉舊版的預估花費
+      Reflect.deleteProperty(s, 'est_cost')
     }
     for (const e of db.expenses) e.twd_amount ??= null
     // 加入子項目與帳號前存下的示範資料
