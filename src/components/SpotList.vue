@@ -12,6 +12,7 @@ const emit = defineEmits<{
   edit: [spot: Spot]
   booking: [spot: Spot]
   'item-edit': [spot: Spot, item: SpotItem | null]
+  expenses: [spot: Spot]
   /** 拖到 day 這一天的第 index 個位置（以拖曳前的清單、扣掉被拖的那筆來算） */
   move: [id: Id, day: number | null, index: number]
 }>()
@@ -61,6 +62,7 @@ onBeforeUnmount(() => sortable?.destroy())
           @edit="emit('edit', s)"
           @booking="emit('booking', s)"
           @item-edit="emit('item-edit', s, $event)"
+          @expenses="emit('expenses', s)"
         />
       </div>
     </div>

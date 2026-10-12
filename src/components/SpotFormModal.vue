@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import { computed, reactive, ref, watch } from 'vue'
-import { ListPlus, Navigation, Trash2 } from 'lucide-vue-next'
+import { ListPlus, Navigation, ReceiptText, Trash2 } from 'lucide-vue-next'
 import ModalSheet from './ModalSheet.vue'
 import StaleNotice from './StaleNotice.vue'
 import type { BookingStatus, Spot, SpotCategory, SpotInput } from '@/types'
@@ -21,7 +21,7 @@ const props = defineProps<{
   /** 新增時預設排在哪一天；null 是口袋名單 */
   day?: number | null
 }>()
-const emit = defineEmits<{ close: []; 'add-item': [spot: Spot] }>()
+const emit = defineEmits<{ close: []; 'add-item': [spot: Spot]; 'add-expense': [spot: Spot] }>()
 
 const store = useTripStore()
 const trip = computed(() => store.trip!)
@@ -236,8 +236,10 @@ async function remove() {
         <label class="label" for="spot-note">備註（選填）</label>
         <textarea id="spot-note" v-model="form.note" class="input min-h-24" maxlength="2000" placeholder="營業時間、訂位代號、交通方式…" />
       </div>
-      <div v-if="base && !gone" class="flex flex-wrap items-center justify-between gap-2">
+      <div v-if="base && !gone" class="flex flex-wrap items-center gap-x-1 gap-y-1">
         <button type="button" class="btn-ghost -ml-2 text-rose-500" @click="remove"><Trash2 class="size-4" />刪除</button>
+        <span class="flex-1" />
+        <button type="button" class="btn-ghost" @click="emit('add-expense', base)"><ReceiptText class="size-4" />記一筆旅費</button>
         <button type="button" class="btn-ghost -mr-2" @click="emit('add-item', base)">
           <ListPlus class="size-4" />新增{{ itemWords(form.category).noun }}（{{ itemCount }}）
         </button>

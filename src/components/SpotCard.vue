@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import { computed } from 'vue'
-import { ChevronRight, GripVertical, MapPin, Navigation, Plus } from 'lucide-vue-next'
+import { ChevronRight, GripVertical, MapPin, Navigation, Plus, ReceiptText } from 'lucide-vue-next'
 import SpotItems from './SpotItems.vue'
 import type { Spot, SpotItem } from '@/types'
 import { useTripStore } from '@/stores/trip'
@@ -8,9 +8,11 @@ import { useExpanded } from '@/composables/useExpanded'
 import { googleMapsUrl } from '@/lib/maps'
 import { formatTime } from '@/lib/format'
 import { bookingLabel, categoryInfo, itemWords, nextBooking } from '@/lib/category'
+import { formatMoney } from '@/lib/money'
+import { expenseTwd } from '@/lib/split'
 
 const props = withDefaults(defineProps<{ spot: Spot; draggable?: boolean }>(), { draggable: true })
-const emit = defineEmits<{ edit: []; booking: []; 'item-edit': [item: SpotItem | null] }>()
+const emit = defineEmits<{ edit: []; booking: []; 'item-edit': [item: SpotItem | null]; expenses: [] }>()
 
 const store = useTripStore()
 const expanded = useExpanded()
@@ -21,6 +23,8 @@ const words = computed(() => itemWords(props.spot.category))
 // 購物一定顯示子清單入口（一區逛多間店是主要用法），其他類型有子項目才顯示
 const showItems = computed(() => items.value.length > 0 || props.spot.category === 'shop')
 const open = computed(() => expanded.isOpen(props.spot.id))
+const expenses = computed(() => store.expensesBySpot.get(props.spot.id) ?? [])
+const spent = computed(() => (store.trip ? expenses.value.reduce((s, e) => s + expenseTwd(e, store.trip!), 0) : 0))
 
 function addFirst() {
   expanded.open(props.spot.id)
@@ -86,26 +90,37 @@ const status = computed(() => {
         </a>
       </div>
     </div>
-    <template v-if="showItems">
+    <div v-if="showItems || expenses.length" class="ml-8 flex flex-wrap items-center gap-x-1">
+      <template v-if="showItems">
+        <button
+          v-if="items.length"
+          type="button"
+          class="flex items-center gap-1 rounded-lg px-1.5 py-1 text-xs font-semibold text-ink-500 hover:bg-ink-50 dark:text-ink-300 dark:hover:bg-ink-800"
+          :aria-expanded="open"
+          @click="expanded.toggle(spot.id)"
+        >
+          <ChevronRight class="size-3.5 transition" :class="open && 'rotate-90'" />
+          {{ items.length }} 個{{ words.noun }}・{{ words.done }} {{ doneCount }}
+        </button>
+        <button
+          v-else
+          type="button"
+          class="flex items-center gap-1 rounded-lg px-1.5 py-1 text-xs font-semibold text-ink-400 hover:bg-ink-50 dark:hover:bg-ink-800"
+          @click="addFirst"
+        >
+          <Plus class="size-3.5" />加入{{ words.noun }}<template v-if="!expenses.length">（一區逛好幾間時用）</template>
+        </button>
+      </template>
       <button
-        v-if="items.length"
+        v-if="expenses.length"
         type="button"
-        class="ml-8 flex items-center gap-1 rounded-lg px-1.5 py-1 text-xs font-semibold text-ink-500 hover:bg-ink-50 dark:text-ink-300 dark:hover:bg-ink-800"
-        :aria-expanded="open"
-        @click="expanded.toggle(spot.id)"
+        class="num flex items-center gap-1 rounded-lg px-1.5 py-1 text-xs font-semibold text-ink-500 hover:bg-ink-50 dark:text-ink-300 dark:hover:bg-ink-800"
+        :aria-label="`${spot.title} 的旅費：${expenses.length} 筆，共 ${formatMoney(spent)}`"
+        @click="emit('expenses')"
       >
-        <ChevronRight class="size-3.5 transition" :class="open && 'rotate-90'" />
-        {{ items.length }} 個{{ words.noun }}・{{ words.done }} {{ doneCount }}
+        <ReceiptText class="size-3.5" />{{ formatMoney(spent) }}・{{ expenses.length }} 筆
       </button>
-      <button
-        v-else
-        type="button"
-        class="ml-8 flex items-center gap-1 rounded-lg px-1.5 py-1 text-xs font-semibold text-ink-400 hover:bg-ink-50 dark:hover:bg-ink-800"
-        @click="addFirst"
-      >
-        <Plus class="size-3.5" />加入{{ words.noun }}（一區逛好幾間時用）
-      </button>
-      <SpotItems v-if="open && items.length" class="ml-1" :spot="spot" :items="items" @edit="emit('item-edit', $event)" />
-    </template>
+    </div>
+    <SpotItems v-if="showItems && open && items.length" class="ml-1" :spot="spot" :items="items" @edit="emit('item-edit', $event)" />
   </div>
 </template>

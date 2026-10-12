@@ -1,6 +1,6 @@
 import { defineStore } from 'pinia'
 import { computed, ref, shallowRef } from 'vue'
-import type { Id, Participant, Spot, SpotItem, TripData } from '@/types'
+import type { Expense, Id, Participant, Spot, SpotItem, TripData } from '@/types'
 import { repo } from '@/data'
 import { ConflictError, InvalidTokenError, type ItemMove, type SpotMove } from '@/data/repository'
 import { RowMissingError } from '@/data/writeCheck'
@@ -227,6 +227,17 @@ export const useTripStore = defineStore('trip', () => {
     return map
   })
 
+  const expensesBySpot = computed(() => {
+    const map = new Map<Id, Expense[]>()
+    for (const e of data.value?.expenses ?? []) {
+      if (!e.spot_id) continue
+      const list = map.get(e.spot_id)
+      if (list) list.push(e)
+      else map.set(e.spot_id, [e])
+    }
+    return map
+  })
+
   const splitData = computed(() =>
     data.value
       ? {
@@ -258,6 +269,7 @@ export const useTripStore = defineStore('trip', () => {
     dayCount,
     spotsByDay,
     itemsBySpot,
+    expensesBySpot,
     balances,
     settlements,
     memberSummaries,

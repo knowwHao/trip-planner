@@ -112,11 +112,17 @@ export function seedDemoTrip() {
   })
   const flight = expense('機票', 39200, 'TWD', hua, { note: '四人來回' })
   const hotel = expense('飯店四晚', 120000, 'JPY', ming, { spent_on: start })
-  const dinner = expense('燒肉晚餐', 18000, 'JPY', jie, { split_mode: 'custom', spent_on: addDays(start, 1), note: '小美沒喝酒' })
+  const dinner = expense('燒肉晚餐', 18000, 'JPY', jie, {
+    split_mode: 'custom',
+    spent_on: addDays(start, 1),
+    spot_id: spots.find((x) => x.title === '敘敘苑 晴空塔店')!.id,
+    note: '小美沒喝酒',
+  })
   // 一次結帳裡有幫別人買的東西：照信用卡實際扣款換算
   const drugstore = expense('松本清藥妝', 12800, 'JPY', mei, {
     split_mode: 'custom',
     spent_on: addDays(start, 3),
+    spot_id: ginza.id,
     twd_amount: 2741,
     note: '幫小明買眼藥水、幫阿傑買合利他命',
   })

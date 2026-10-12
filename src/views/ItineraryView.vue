@@ -4,7 +4,9 @@ import { AlarmClock, ArrowDownWideNarrow, Bookmark, Plus } from 'lucide-vue-next
 import SpotList from '@/components/SpotList.vue'
 import SpotFormModal from '@/components/SpotFormModal.vue'
 import ItemFormModal from '@/components/ItemFormModal.vue'
-import type { Id, Spot, SpotCategory, SpotItem } from '@/types'
+import ExpenseFormModal from '@/components/ExpenseFormModal.vue'
+import SpotExpensesModal from '@/components/SpotExpensesModal.vue'
+import type { Expense, Id, Spot, SpotCategory, SpotItem } from '@/types'
 import { repo } from '@/data'
 import { useTripStore } from '@/stores/trip'
 import { ConflictError, type SpotMove } from '@/data/repository'
@@ -87,6 +89,42 @@ function editItem(s: Spot, item: SpotItem | null) {
   itemSpot.value = s
   editingItem.value = item
   itemOpen.value = true
+}
+
+// 行程的旅費：卡片上的金額打開清單，清單或編輯框都能記一筆（帶入這個行程與那天的日期）
+const expenseSpot = ref<Spot | null>(null)
+const expensesOpen = ref(false)
+const editingExpense = ref<Expense | null>(null)
+const expenseOpen = ref(false)
+const expensePreset = computed(() =>
+  expenseSpot.value
+    ? {
+        spot_id: expenseSpot.value.id,
+        spent_on: expenseSpot.value.day && expenseSpot.value.day <= store.dayCount ? dayDate(trip.value, expenseSpot.value.day) : null,
+        title: expenseSpot.value.title,
+      }
+    : null,
+)
+
+function showExpenses(s: Spot) {
+  expenseSpot.value = s
+  expensesOpen.value = true
+}
+
+function editExpense(e: Expense | null) {
+  expensesOpen.value = false
+  modalOpen.value = false
+  editingExpense.value = e
+  expenseOpen.value = true
+}
+
+function addExpenseFromForm(s: Spot) {
+  if (!store.participants.length) {
+    toast.info('記旅費前要先到「設定」新增旅伴')
+    return
+  }
+  expenseSpot.value = s
+  editExpense(null)
 }
 
 /** 從行程的編輯框按「新增店家」：關掉編輯框、展開子清單、開新增框 */
@@ -243,10 +281,13 @@ function jump(day: number | null) {
         @move="move"
         @booking="toggleBooking"
         @item-edit="editItem"
+        @expenses="showExpenses"
       />
     </section>
 
-    <SpotFormModal :open="modalOpen" :spot="editing" :day="addingDay" @close="modalOpen = false" @add-item="addItemFromForm" />
+    <SpotFormModal :open="modalOpen" :spot="editing" :day="addingDay" @close="modalOpen = false" @add-item="addItemFromForm" @add-expense="addExpenseFromForm" />
     <ItemFormModal :open="itemOpen" :spot="itemSpot" :item="editingItem" @close="itemOpen = false" />
+    <SpotExpensesModal :open="expensesOpen" :spot="expenseSpot" @close="expensesOpen = false" @edit="editExpense" />
+    <ExpenseFormModal :open="expenseOpen" :expense="editingExpense" :preset="expensePreset" @close="expenseOpen = false" />
   </div>
 </template>

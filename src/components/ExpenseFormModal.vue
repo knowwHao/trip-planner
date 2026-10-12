@@ -14,7 +14,12 @@ import { dayDate, formatDate, todayYmd } from '@/lib/format'
 import { currencyDigits, currencyInfo, formatMoney, formatRate, fromMinor, MAX_AMOUNT, parseAmount, parseSum, toMinor, toTwd } from '@/lib/money'
 import { customRemaining, expenseDues } from '@/lib/split'
 
-const props = defineProps<{ open: boolean; expense?: Expense | null }>()
+const props = defineProps<{
+  open: boolean
+  expense?: Expense | null
+  /** 從行程記一筆時帶入的預設值 */
+  preset?: { spot_id: Id; spent_on: string | null; title: string } | null
+}>()
 const emit = defineEmits<{ close: [] }>()
 
 const store = useTripStore()
@@ -48,13 +53,13 @@ function fill(e: Expense | null | undefined) {
   base.value = e ?? null
   const shares = e ? (store.data?.shares ?? []).filter((s) => s.expense_id === e.id) : []
   Object.assign(form, {
-    title: e?.title ?? '',
+    title: e?.title ?? props.preset?.title ?? '',
     amount: e ? String(e.amount) : '',
     currency: e?.currency ?? trip.value.currency,
     charged: e?.twd_amount != null ? String(e.twd_amount) : '',
     payer: e?.payer_id ?? people.value[0]?.id ?? '',
-    date: e ? (e.spent_on ?? '') : defaultDate(),
-    spot: e?.spot_id ?? '',
+    date: e ? (e.spent_on ?? '') : (props.preset?.spent_on ?? defaultDate()),
+    spot: e?.spot_id ?? props.preset?.spot_id ?? '',
     note: e?.note ?? '',
     mode: e?.split_mode ?? 'even',
     checked: e ? shares.map((s) => s.participant_id) : people.value.map((p) => p.id),
@@ -144,12 +149,13 @@ function remainingToPayer() {
 
 const payerName = computed(() => store.participantName(form.payer))
 
-const spotOptions = computed(() =>
-  (store.data?.spots ?? [])
-    .filter((s) => s.day !== null && s.day <= store.dayCount)
-    .sort((a, b) => a.day! - b.day! || a.sort_key - b.sort_key)
-    .map((s) => ({ value: s.id, label: `D${s.day} ${s.title}` })),
-)
+// 口袋名單的行程排在最後，從口袋名單裡的行程記帳時才選得到
+const spotOptions = computed(() => {
+  const dayOf = (s: { day: number | null }) => (s.day !== null && s.day <= store.dayCount ? s.day : Infinity)
+  return [...(store.data?.spots ?? [])]
+    .sort((a, b) => dayOf(a) - dayOf(b) || a.sort_key - b.sort_key)
+    .map((s) => ({ value: s.id, label: `${dayOf(s) === Infinity ? '口袋' : `D${s.day}`} ${s.title}` }))
+})
 
 const dateOptions = computed(() => Array.from({ length: store.dayCount }, (_, i) => dayDate(trip.value, i + 1)))
 
@@ -338,7 +344,7 @@ async function remove() {
       </fieldset>
 
       <div v-if="spotOptions.length">
-        <label class="label" for="exp-spot">哪個景點（選填）</label>
+        <label class="label" for="exp-spot">哪個行程（選填）</label>
         <select id="exp-spot" v-model="form.spot" class="input">
           <option value="">不指定</option>
           <option v-for="s in spotOptions" :key="s.value" :value="s.value">{{ s.label }}</option>

@@ -55,7 +55,8 @@ npm run build        # vue-tsc 型別檢查 + vite build 到 dist/
 - `src/composables/useConflict.ts`：`saveWithConflict()`，別人改過時問「用我的覆蓋／看最新版本」
 - `src/router.ts`：`/` 我的旅程、`/t/:token`（`JoinView` 記下 token 後以 replace 導到旅程頁，網址不留 token）、`/trips/:tripId`（`TripLayout` 底下行程／旅費／設定）
 - 行程：`src/views/ItineraryView.vue`、`src/components/SpotList.vue`（SortableJS，拖完先把 DOM 放回原位再改資料）、`SpotCard.vue`、`SpotFormModal.vue`；
-  子項目：`SpotItems.vue`（卡片裡的子清單，各行程各自一組 Sortable）、`ItemFormModal.vue`、`src/composables/useExpanded.ts`（展開狀態）
+  子項目：`SpotItems.vue`（卡片裡的子清單，各行程各自一組 Sortable）、`ItemFormModal.vue`、`src/composables/useExpanded.ts`（展開狀態）；
+  行程的旅費：`SpotExpensesModal.vue`（依 `expenses.spot_id`，從行程記帳以 `ExpenseFormModal` 的 `preset` 帶入行程與日期）
 - 旅費：`src/views/ExpensesView.vue`、`src/components/ExpenseFormModal.vue`、`TransferModal.vue`
 - `supabase/schema.sql`：資料表、RLS、`current_trip_id()`、`bump_version()`、`create_trip()`／`regenerate_trip_token()`／`save_expense()`、帳號函式 `account_*`
 - `.github/workflows/deploy.yml`：測試、打包、部署 Pages；`keepalive.yml`：每日不帶 token GET trips，預期 `[]`
