@@ -1,8 +1,10 @@
 <script setup lang="ts">
 import { computed, reactive, ref, watch } from 'vue'
+import { Check } from 'lucide-vue-next'
 import ModalSheet from './ModalSheet.vue'
 import StaleNotice from './StaleNotice.vue'
-import type { Trip, TripInput } from '@/types'
+import type { Id, Trip, TripInput } from '@/types'
+import { useAccountStore } from '@/stores/account'
 import { CURRENCIES, currencyInfo, formatMoney, toTwd } from '@/lib/money'
 import { addDays, diffDays, MAX_TRIP_DAYS, todayYmd } from '@/lib/format'
 
@@ -16,8 +18,26 @@ const props = defineProps<{
 }>()
 const emit = defineEmits<{
   close: []
-  submit: [input: TripInput, participants: string[]]
+  submit: [input: TripInput, members: Id[], names: string[]]
 }>()
+
+const account = useAccountStore()
+/** 建立時一起加進來的註冊使用者 */
+const picked = ref<Set<Id>>(new Set())
+const memberQuery = ref('')
+// 自己一定是成員，不列出來
+const others = computed(() => account.accounts.filter((a) => a.id !== account.session?.id))
+const shownOthers = computed(() => {
+  const q = memberQuery.value.trim().toLowerCase()
+  return others.value.filter((a) => picked.value.has(a.id) || !q || a.name.toLowerCase().includes(q))
+})
+
+function toggle(id: Id) {
+  const next = new Set(picked.value)
+  if (next.has(id)) next.delete(id)
+  else next.add(id)
+  picked.value = next
+}
 
 const form = reactive({ name: '', start: '', end: '', currency: 'TWD', rate: '1', people: '' })
 const touched = ref(false)
@@ -34,12 +54,19 @@ function fill(t: Trip | null | undefined) {
     people: '',
   })
   prevStart = form.start
+  picked.value = new Set()
+  memberQuery.value = ''
   touched.value = false
 }
 
 watch(
   () => props.open,
-  (open) => open && fill(props.trip),
+  (open) => {
+    if (!open) return
+    fill(props.trip)
+    // 讀不到使用者清單時還是能建立，之後到設定再加
+    if (!props.trip) account.loadAccounts().catch(() => {})
+  },
   { immediate: true },
 )
 
@@ -58,7 +85,11 @@ const errors = computed(() => {
   else if (days.value > MAX_TRIP_DAYS) e.dates = `最多 ${MAX_TRIP_DAYS} 天`
   if (!(rate.value > 0 && rate.value < 100000)) e.rate = '請輸入大於 0 的匯率'
   if (people.value.some((p) => [...p].length > 20)) e.people = '每個名字最多 20 個字'
-  if (people.value.length > 50) e.people = '最多 50 位'
+  if (people.value.length + picked.value.size > 50) e.people = '最多 50 位'
+  const memberNames = new Set(others.value.filter((a) => picked.value.has(a.id)).map((a) => a.name))
+  if (account.session) memberNames.add(account.session.name)
+  const dup = people.value.filter((p) => memberNames.has(p))
+  if (dup.length) e.people = `${dup.join('、')} 已經是成員，不用再寫一次`
   return e
 })
 
@@ -68,6 +99,7 @@ function submit() {
   emit(
     'submit',
     { name: form.name.trim(), start_date: form.start, end_date: form.end, currency: form.currency, fx_rate: rate.value },
+    [...picked.value],
     people.value,
   )
 }
@@ -122,12 +154,43 @@ function onStartChange() {
         </p>
       </div>
 
-      <div v-if="!trip">
-        <label class="label" for="trip-people">旅伴（選填）</label>
-        <textarea id="trip-people" v-model="form.people" class="input min-h-20" placeholder="小明 小華 阿傑" />
+      <fieldset v-if="!trip">
+        <legend class="label">一起去的旅伴（選填）</legend>
+        <p class="-mt-0.5 mb-2 text-xs text-ink-400">勾選的人登入後就能看到並編輯這趟；你自己一定在裡面</p>
+        <input
+          v-if="others.length > 8"
+          v-model="memberQuery"
+          class="input mb-2 py-2"
+          placeholder="搜尋名稱"
+          aria-label="搜尋旅伴名稱"
+          autocomplete="off"
+        />
+        <div v-if="shownOthers.length" class="flex flex-wrap gap-1.5">
+          <button
+            v-for="a in shownOthers"
+            :key="a.id"
+            type="button"
+            role="checkbox"
+            :aria-checked="picked.has(a.id)"
+            class="flex max-w-full items-center gap-1 rounded-full border px-3 py-1.5 text-sm font-semibold transition"
+            :class="
+              picked.has(a.id)
+                ? 'border-sea-400 bg-sea-100 text-ink-900 dark:bg-sea-400/15 dark:text-white'
+                : 'border-ink-200 text-ink-500 hover:border-sea-400 dark:border-ink-700 dark:text-ink-300'
+            "
+            @click="toggle(a.id)"
+          >
+            <Check v-if="picked.has(a.id)" class="size-3.5 shrink-0" />
+            <span class="truncate">{{ a.name }}</span>
+          </button>
+        </div>
+        <p v-else class="text-xs text-ink-400">{{ others.length ? '找不到這個名稱' : '還沒有其他人註冊，之後也能在設定加' }}</p>
+
+        <label class="label mt-4" for="trip-people">沒註冊的旅伴（選填）</label>
+        <textarea id="trip-people" v-model="form.people" class="input min-h-16" placeholder="阿姨 表哥" />
         <p v-if="touched && errors.people" class="mt-1 text-xs text-rose-500">{{ errors.people }}</p>
-        <p v-else class="mt-1 text-xs text-ink-400">用空白、逗號或換行分開；記旅費時用得到，之後也能在設定新增</p>
-      </div>
+        <p v-else class="mt-1 text-xs text-ink-400">只用來分旅費、看不到旅程；用空白或逗號分開，之後註冊了可以在設定換成帳號</p>
+      </fieldset>
     </form>
     <template #footer>
       <button type="button" class="btn-outline flex-1" @click="emit('close')">取消</button>

@@ -9,7 +9,7 @@ export const repo: TripRepository = url && anonKey ? new SupabaseRepo(url, anonK
 
 export const isDemo = repo.mode === 'demo'
 
-/** 開一趟示範旅程；非 Demo 模式回 null */
-export function createDemoTrip(): { id: string; token: string } | null {
+/** 開一趟示範旅程並回傳 id；非 Demo 模式回 null */
+export function createDemoTrip(): string | null {
   return repo instanceof DemoRepo ? repo.createDemoTrip() : null
 }

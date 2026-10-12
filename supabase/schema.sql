@@ -2,17 +2,17 @@
 -- 旅遊規劃 Supabase schema
 -- 在 Supabase Dashboard → SQL Editor 貼上整份執行即可；可重複執行，也可套在舊版資料庫上升級
 --
--- 不用帳號登入：每趟旅程有自己的 token，拿到「旅程連結」的人都能查看與編輯那一趟，
--- 沒有連結的人什麼都讀不到、改不了；任何人都能在網站上建立新旅程（經 create_trip()）
---   旅程連結：https://knowwhao.github.io/trip-planner/#/t/<token>
+-- 帳號成員制：要先註冊／登入（名稱＋6～8 位數字密碼），只看得到自己是成員的旅程；
+-- 任何成員都能把其他註冊使用者加進旅程或移出，旅程至少要留一位成員
 --
--- 原理：前端在每個 API 請求帶 x-trip-token header，RLS 以 current_trip_id() 找出 token 對應的旅程，
--- 子表一律以 trip_id 比對；子表之間的外鍵都帶 trip_id，參照不到別趟旅程的資料
+-- 原理：前端在每個 API 請求帶 x-account-id 與 x-account-key header，current_account_id() 驗證登入憑證，
+-- my_trip_ids() 列出這個帳號參加的旅程，RLS 一律以 trip_id in my_trip_ids() 比對；
+-- 子表之間的外鍵都帶 trip_id，參照不到別趟旅程的資料
 --
--- 帳號（選用）：名稱＋數字密碼，只用來在不同裝置找回「我的旅程」，不影響旅程權限；忘記密碼的重設 SQL 見 README
+-- 旅伴（participants）有兩種：account_id 有值的是成員（看得到、能編輯），null 的是只有名字的旅伴（只用來分旅費）
 --
 -- 同時編輯：內容欄位改動時 version 自動 +1，前端以 version 做樂觀鎖，
--- 版本對不上（別人剛改過）時更新 0 列，前端再判斷是衝突、資料已刪除還是連結失效
+-- 版本對不上（別人剛改過）時更新 0 列，前端再判斷是衝突、資料已刪除還是已經不是成員
 -- =============================================================
 
 -- ---------- 預設權限 ----------
@@ -24,8 +24,8 @@ alter default privileges for role postgres in schema public revoke all on tables
 alter default privileges for role postgres in schema public revoke all on functions from anon, authenticated;
 alter default privileges for role postgres in schema public revoke all on sequences from anon, authenticated;
 
--- 兩個 v4 UUID 共 244 bit 隨機；用內建 gen_random_uuid 免得依賴 pgcrypto 所在的 schema
-create or replace function public.new_trip_token()
+-- 兩個 v4 UUID 共 244 bit 隨機，用於密碼的鹽與登入憑證；用內建 gen_random_uuid 免得依賴 pgcrypto 所在的 schema
+create or replace function public.new_secret()
 returns text
 language sql
 volatile
@@ -38,7 +38,6 @@ $$;
 
 create table if not exists public.trips (
   id         uuid primary key default gen_random_uuid(),
-  token      text not null unique default public.new_trip_token() check (length(token) >= 32),
   name       text not null check (length(btrim(name)) between 1 and 40),
   start_date date not null,
   end_date   date not null,
@@ -51,6 +50,20 @@ create table if not exists public.trips (
   constraint trips_dates_ok check (end_date >= start_date and end_date - start_date < 60),
   constraint trips_twd_rate check (currency <> 'TWD' or fx_rate = 1)
 );
+
+-- 帳號：名稱＋6～8 位數字密碼；完全不授權給前端，只能經下方 account_* 等函式存取
+create table if not exists public.accounts (
+  id              uuid primary key default gen_random_uuid(),
+  name            text not null check (length(btrim(name)) between 2 and 20),
+  pin_salt        text not null,
+  pin_hash        text not null,
+  -- 登入憑證；改密碼時換掉，其他裝置就得重新登入
+  session_key     text not null,
+  failed_attempts int not null default 0,
+  locked_until    timestamptz,
+  created_at      timestamptz not null default now()
+);
+create unique index if not exists accounts_name_key on public.accounts (lower(btrim(name)));
 
 create table if not exists public.participants (
   id         uuid primary key default gen_random_uuid(),
@@ -150,29 +163,29 @@ create table if not exists public.spot_items (
   foreign key (spot_id, trip_id) references public.spots (id, trip_id) on delete cascade
 );
 
--- 帳號：名稱＋6～8 位數字密碼，用來在不同裝置找回「我的旅程」；旅程權限仍然只看旅程 token
--- 這兩張表完全不授權給前端，只能經下方 account_* 函式存取
-create table if not exists public.accounts (
-  id              uuid primary key default gen_random_uuid(),
-  name            text not null check (length(btrim(name)) between 2 and 20),
-  pin_salt        text not null,
-  pin_hash        text not null,
-  -- 登入憑證；改密碼時換掉，其他裝置就得重新登入
-  session_key     text not null,
-  failed_attempts int not null default 0,
-  locked_until    timestamptz,
-  created_at      timestamptz not null default now()
-);
-create unique index if not exists accounts_name_key on public.accounts (lower(btrim(name)));
-
--- 存的是加入當下的 token：旅程換發 token 後這筆就失效，免得外流的連結被存進帳號而繞過「重新產生」
-create table if not exists public.account_trips (
-  account_id uuid not null references public.accounts (id) on delete cascade,
-  trip_id    uuid not null references public.trips (id) on delete cascade,
-  token      text not null,
-  added_at   timestamptz not null default now(),
-  primary key (account_id, trip_id)
-);
+-- ---------- 清除舊版（旅程連結版）殘留 ----------
+-- 舊版以 x-trip-token 比對旅程連結；policy 依賴 current_trip_id()，要先拆掉 policy 才能刪函式，下方 RLS 段落會重建
+do $$
+declare t text;
+begin
+  foreach t in array array['trips', 'participants', 'spots', 'expenses', 'expense_shares', 'transfers', 'spot_items'] loop
+    execute format('drop policy if exists trip_all on public.%I', t);
+  end loop;
+end;
+$$;
+drop function if exists public.regenerate_trip_token();
+drop function if exists public.create_trip(text, date, date, text, numeric, text[]);
+drop function if exists public.save_expense(jsonb, jsonb);
+drop function if exists public.account_list_trips(uuid, text);
+drop function if exists public.account_save_trip(uuid, text, text);
+drop function if exists public.account_remove_trip(uuid, text, uuid);
+-- 舊版帳號函式以參數帶登入憑證，新版改從 header 取
+drop function if exists public.account_change_pin(uuid, text, text, text);
+drop function if exists public.require_account(uuid, text);
+drop table if exists public.account_trips;
+alter table public.trips drop column if exists token;
+drop function if exists public.current_trip_id();
+drop function if exists public.new_trip_token();
 
 -- ---------- 後來加的欄位 ----------
 -- 只寫在這裡、不寫進上面的 create table：新資料庫與舊資料庫升級都走同一條路
@@ -188,9 +201,21 @@ alter table public.spots
 -- 舊版的預估花費，行程畫面已拿掉不用
 alter table public.spots drop column if exists est_cost;
 
+-- 航班（交通類型才用）：起飛時間沿用 start_time，抵達時間跨日時以 arr_day_offset 記 +1、+2
+alter table public.spots add column if not exists airline text not null default '' check (length(airline) <= 40);
+alter table public.spots add column if not exists flight_no text not null default '' check (flight_no ~ '^[A-Z0-9]{0,8}$');
+alter table public.spots add column if not exists dep_airport text not null default '' check (length(dep_airport) <= 40);
+alter table public.spots add column if not exists arr_airport text not null default '' check (length(arr_airport) <= 40);
+alter table public.spots add column if not exists arr_time time;
+alter table public.spots add column if not exists arr_day_offset int not null default 0 check (arr_day_offset between 0 and 2);
+
 -- 外幣旅費的實際扣款（新台幣，例如信用卡帳單金額），有填時這筆用它換算而不用旅程匯率
 alter table public.expenses
   add column if not exists twd_amount int check (twd_amount > 0 and twd_amount < 100000000);
+
+-- 旅伴對應的帳號；有值就是成員。帳號被刪除時留下名字，旅費紀錄不受影響
+alter table public.participants
+  add column if not exists account_id uuid references public.accounts (id) on delete set null;
 
 do $$
 begin
@@ -206,6 +231,8 @@ begin
 end;
 $$;
 
+create unique index if not exists participants_member_key on public.participants (trip_id, account_id) where account_id is not null;
+create index if not exists participants_account_idx on public.participants (account_id) where account_id is not null;
 create index if not exists participants_trip_idx on public.participants (trip_id);
 create index if not exists spots_trip_idx on public.spots (trip_id);
 create index if not exists expenses_trip_idx on public.expenses (trip_id);
@@ -213,18 +240,18 @@ create index if not exists expense_shares_trip_idx on public.expense_shares (tri
 create index if not exists transfers_trip_idx on public.transfers (trip_id);
 create index if not exists spot_items_trip_idx on public.spot_items (trip_id);
 create index if not exists spot_items_spot_idx on public.spot_items (spot_id);
-create index if not exists account_trips_trip_idx on public.account_trips (trip_id);
 
 -- ---------- 版本號 ----------
 
--- 只有內容欄位變動才 +1：拖曳排序（day、sort_key）與子項目打勾（done）不算，否則別人正在編輯的那筆一被搬動或勾選就會被判成衝突
+-- 只有內容欄位變動才 +1：拖曳排序（day、sort_key）、子項目打勾（done）與成員異動（account_id）不算，
+-- 否則別人正在編輯的那筆一被搬動或勾選就會被判成衝突
 create or replace function public.bump_version()
 returns trigger
 language plpgsql
 set search_path = ''
 as $$
 declare
-  skip constant text[] := array['version', 'updated_at', 'sort_key', 'day', 'token', 'done'];
+  skip constant text[] := array['version', 'updated_at', 'sort_key', 'day', 'done', 'account_id'];
 begin
   if (to_jsonb(new) - skip) is distinct from (to_jsonb(old) - skip) then
     new.version := old.version + 1;
@@ -266,30 +293,82 @@ drop trigger if exists check_trip_currency on public.trips;
 create trigger check_trip_currency before update of currency on public.trips
   for each row execute function public.check_trip_currency();
 
+-- 旅程至少要留一位成員，否則沒人看得到它；整趟旅程刪除時連帶刪旅伴不受限
+-- security definer：移出自己之後，以自己的身分已經讀不到這趟旅程的旅伴
+create or replace function public.keep_one_member()
+returns trigger
+language plpgsql
+security definer
+set search_path = ''
+as $$
+begin
+  if exists (select 1 from public.trips where id = old.trip_id)
+     and not exists (select 1 from public.participants where trip_id = old.trip_id and account_id is not null) then
+    raise exception 'trip needs at least one member' using errcode = 'TP423';
+  end if;
+  return null;
+end;
+$$;
+
+drop trigger if exists keep_one_member on public.participants;
+create trigger keep_one_member after update of account_id or delete on public.participants
+  for each row execute function public.keep_one_member();
+
+-- 成員的名字一律是帳號名稱，不另取暱稱；移出後留下的名字才能改
+create or replace function public.sync_member_name()
+returns trigger
+language plpgsql
+security definer
+set search_path = ''
+as $$
+begin
+  if new.account_id is not null then
+    new.name := (select name from public.accounts where id = new.account_id);
+  end if;
+  return new;
+end;
+$$;
+
+drop trigger if exists sync_member_name on public.participants;
+create trigger sync_member_name before insert or update on public.participants
+  for each row execute function public.sync_member_name();
+
 -- ---------- 權限判斷 ----------
 
 -- PostgREST 把請求 header 以小寫名稱存進 request.headers；同一連線先前設過再清掉時會是空字串而非 null
--- security definer 才能在 RLS 開啟時讀 trips，否則 trips 自己的 policy 會遞迴
-create or replace function public.current_trip_id()
+-- 以文字比對 id，header 不是合法 uuid 時才不會讓整個查詢報錯
+create or replace function public.current_account_id()
 returns uuid
 language sql
 stable
 security definer
 set search_path = ''
 as $$
-  select t.id
-    from public.trips t
-   where t.token = (nullif(current_setting('request.headers', true), '')::json ->> 'x-trip-token');
+  select a.id
+    from public.accounts a,
+         (select nullif(current_setting('request.headers', true), '')::json as h) r
+   where a.id::text = r.h ->> 'x-account-id'
+     and a.session_key = r.h ->> 'x-account-key';
+$$;
+
+-- security definer 才能在 RLS 開啟時讀 participants，否則 participants 自己的 policy 會遞迴
+create or replace function public.my_trip_ids()
+returns setof uuid
+language sql
+stable
+security definer
+set search_path = ''
+as $$
+  select p.trip_id from public.participants p where p.account_id = (select public.current_account_id());
 $$;
 
 -- ---------- RLS ----------
--- anon 與 authenticated 一律要帶正確的旅程 token 才能讀寫；包成 (select …) 讓每個查詢只算一次
+-- 一律要帶有效的登入憑證，而且只碰得到自己是成員的旅程；包成 (select …) 讓每個查詢只算一次
 
 alter table public.trips enable row level security;
 revoke truncate, trigger, references on public.trips from anon, authenticated;
-drop policy if exists trip_all on public.trips;
 create policy trip_all on public.trips for all to anon, authenticated
-  using (id = (select public.current_trip_id())) with check (id = (select public.current_trip_id()));
+  using (id in (select public.my_trip_ids())) with check (id in (select public.my_trip_ids()));
 
 do $$
 declare t text;
@@ -298,139 +377,31 @@ begin
     execute format('alter table public.%I enable row level security', t);
     -- TRUNCATE 不受 RLS 約束，只能靠收回權限擋下
     execute format('revoke truncate, trigger, references on public.%I from anon, authenticated', t);
-    execute format('drop policy if exists trip_all on public.%I', t);
     execute format(
       'create policy trip_all on public.%I for all to anon, authenticated
-         using (trip_id = (select public.current_trip_id())) with check (trip_id = (select public.current_trip_id()))', t);
+         using (trip_id in (select public.my_trip_ids())) with check (trip_id in (select public.my_trip_ids()))', t);
     execute format('grant select, insert, update, delete on public.%I to anon, authenticated', t);
   end loop;
 end;
 $$;
 
--- 旅程只能經 create_trip() 建立，token 只能經 regenerate_trip_token() 換發，避免被改成弱 token
+-- 旅程只能經 create_trip() 建立（建立者一併成為成員）
 revoke insert, update on public.trips from anon, authenticated;
 grant select, delete on public.trips to anon, authenticated;
 grant update (name, start_date, end_date, currency, fx_rate) on public.trips to anon, authenticated;
 
--- 帳號兩張表是唯一不授權的表：讀得到就等於拿到雜湊、登入憑證與別人存的旅程 token；開 RLS 不設 policy 只是保險
+-- 成員（account_id）只能經 add_trip_member()／remove_trip_member() 異動，直接新增的都是只有名字的旅伴
+revoke insert, update on public.participants from anon, authenticated;
+grant insert (trip_id, name, sort_order) on public.participants to anon, authenticated;
+grant update (name, sort_order) on public.participants to anon, authenticated;
+
+-- accounts 是唯一不授權的表：讀得到就等於拿到雜湊與登入憑證；開 RLS 不設 policy 只是保險
 alter table public.accounts enable row level security;
-alter table public.account_trips enable row level security;
-revoke all on public.accounts, public.account_trips from anon, authenticated;
-
--- ---------- RPC ----------
-
-create or replace function public.create_trip(
-  p_name text, p_start date, p_end date, p_currency text, p_fx_rate numeric, p_participants text[])
-returns jsonb
-language plpgsql
-volatile
-security definer
-set search_path = ''
-as $$
-declare
-  t public.trips;
-begin
-  if coalesce(array_length(p_participants, 1), 0) > 50 then
-    raise exception 'too many participants' using errcode = '22023';
-  end if;
-  insert into public.trips (name, start_date, end_date, currency, fx_rate)
-  values (btrim(p_name), p_start, p_end, upper(p_currency), p_fx_rate)
-  returning * into t;
-  insert into public.participants (trip_id, name, sort_order)
-  select t.id, x.name, x.ord - 1
-    from (select btrim(n) as name, min(o) as ord
-            from unnest(p_participants) with ordinality as u (n, o)
-           where btrim(n) <> ''
-           group by btrim(n)) x;
-  return jsonb_build_object('id', t.id, 'token', t.token);
-end;
-$$;
-
-create or replace function public.regenerate_trip_token()
-returns text
-language plpgsql
-volatile
-security definer
-set search_path = ''
-as $$
-declare
-  v_trip uuid := public.current_trip_id();
-  t text;
-begin
-  if v_trip is null then
-    raise exception 'invalid trip token' using errcode = '42501';
-  end if;
-  update public.trips set token = public.new_trip_token() where id = v_trip returning token into t;
-  return t;
-end;
-$$;
-
--- 費用與分攤一起寫，避免只寫進一半；security invoker 讓 RLS 照常把關
--- p_expense 帶 id 與 version 時是修改，版本不符丟 TP409、費用已不在丟 TP404
-create or replace function public.save_expense(p_expense jsonb, p_shares jsonb)
-returns uuid
-language plpgsql
-volatile
-security invoker
-set search_path = ''
-as $$
-declare
-  v_trip uuid := public.current_trip_id();
-  v_id uuid := nullif(p_expense ->> 'id', '')::uuid;
-  v_amount numeric := (p_expense ->> 'amount')::numeric;
-  v_currency text := p_expense ->> 'currency';
-  v_mode text := p_expense ->> 'split_mode';
-  v_found uuid;
-begin
-  if v_trip is null then
-    raise exception 'invalid trip token' using errcode = '42501';
-  end if;
-  if v_currency <> 'TWD' and v_currency <> (select currency from public.trips where id = v_trip) then
-    raise exception 'currency must be TWD or the trip currency' using errcode = '22023';
-  end if;
-  if jsonb_typeof(p_shares) <> 'array' or jsonb_array_length(p_shares) = 0 then
-    raise exception 'at least one share required' using errcode = '22023';
-  end if;
-  if v_mode = 'custom' and (
-       exists (select 1 from jsonb_array_elements(p_shares) s where s ->> 'amount' is null)
-       or (select sum((s ->> 'amount')::numeric) from jsonb_array_elements(p_shares) s) <> v_amount) then
-    raise exception 'custom shares must add up to the amount' using errcode = '22023';
-  end if;
-
-  if v_id is null then
-    insert into public.expenses (trip_id, title, amount, currency, payer_id, split_mode, spent_on, spot_id, note, twd_amount)
-    values (v_trip, btrim(p_expense ->> 'title'), v_amount, v_currency, (p_expense ->> 'payer_id')::uuid, v_mode,
-            nullif(p_expense ->> 'spent_on', '')::date, nullif(p_expense ->> 'spot_id', '')::uuid,
-            coalesce(p_expense ->> 'note', ''), (p_expense ->> 'twd_amount')::int)
-    returning id into v_id;
-  else
-    update public.expenses
-       set title = btrim(p_expense ->> 'title'), amount = v_amount, currency = v_currency,
-           payer_id = (p_expense ->> 'payer_id')::uuid, split_mode = v_mode,
-           spent_on = nullif(p_expense ->> 'spent_on', '')::date, spot_id = nullif(p_expense ->> 'spot_id', '')::uuid,
-           note = coalesce(p_expense ->> 'note', ''), twd_amount = (p_expense ->> 'twd_amount')::int
-     where id = v_id and version = (p_expense ->> 'version')::int
-    returning id into v_found;
-    if v_found is null then
-      if exists (select 1 from public.expenses where id = v_id) then
-        raise exception 'expense was changed by someone else' using errcode = 'TP409';
-      end if;
-      raise exception 'expense not found' using errcode = 'TP404';
-    end if;
-    delete from public.expense_shares where expense_id = v_id;
-  end if;
-
-  insert into public.expense_shares (expense_id, trip_id, participant_id, amount)
-  select v_id, v_trip, (s ->> 'participant_id')::uuid,
-         case when v_mode = 'custom' then (s ->> 'amount')::numeric end
-    from jsonb_array_elements(p_shares) s;
-  return v_id;
-end;
-$$;
+revoke all on public.accounts from anon, authenticated;
 
 -- ---------- 帳號 ----------
 -- 與球友記帳的成員密碼同一套做法：數字密碼加鹽雜湊、連續錯 5 次鎖 15 分鐘；
--- 這個帳號拿得到所有存進去的旅程連結，所以密碼至少 6 位，4 位數在鎖定機制下幾天就試得出來
+-- 帳號拿得到自己所有旅程，所以密碼至少 6 位，4 位數在鎖定機制下幾天就試得出來
 
 create or replace function public.hash_account_pin(p_salt text, p_pin text)
 returns text
@@ -474,19 +445,33 @@ begin
 end;
 $$;
 
--- TP401：登入憑證不符（密碼已在別的裝置改過），前端據此要求重新登入
-create or replace function public.require_account(p_account uuid, p_key text)
-returns void
+-- TP401：沒帶或帶了失效的登入憑證（密碼已在別的裝置改過），前端據此要求重新登入
+create or replace function public.require_account()
+returns uuid
 language plpgsql
 stable
 security definer
 set search_path = ''
 as $$
+declare
+  v_id uuid := public.current_account_id();
 begin
-  if not exists (select 1 from public.accounts where id = p_account and session_key = p_key) then
+  if v_id is null then
     raise exception 'account session expired' using errcode = 'TP401';
   end if;
+  return v_id;
 end;
+$$;
+
+-- 註冊時即時檢查名稱；任何人都能查，名稱本來就會出現在使用者清單裡
+create or replace function public.account_name_available(p_name text)
+returns boolean
+language sql
+stable
+security definer
+set search_path = ''
+as $$
+  select not exists (select 1 from public.accounts where lower(btrim(name)) = lower(btrim(coalesce(p_name, ''))));
 $$;
 
 -- 回傳 {id, name, key}；名稱重複時是 23505
@@ -499,13 +484,13 @@ set search_path = ''
 as $$
 declare
   r public.accounts;
-  salt text := public.new_trip_token();
+  salt text := public.new_secret();
 begin
   if coalesce(p_pin, '') !~ '^[0-9]{6,8}$' then
     raise exception 'pin must be 6-8 digits' using errcode = '22023';
   end if;
   insert into public.accounts (name, pin_salt, pin_hash, session_key)
-  values (btrim(p_name), salt, public.hash_account_pin(salt, p_pin), public.new_trip_token())
+  values (btrim(p_name), salt, public.hash_account_pin(salt, p_pin), public.new_secret())
   returning * into r;
   return jsonb_build_object('id', r.id, 'name', r.name, 'key', r.session_key);
 end;
@@ -527,7 +512,7 @@ begin
 end;
 $$;
 
-create or replace function public.account_change_pin(p_account uuid, p_key text, p_old_pin text, p_new_pin text)
+create or replace function public.account_change_pin(p_old_pin text, p_new_pin text)
 returns jsonb
 language plpgsql
 volatile
@@ -535,46 +520,59 @@ security definer
 set search_path = ''
 as $$
 declare
+  v_id uuid := public.require_account();
   res jsonb;
-  salt text := public.new_trip_token();
-  key text := public.new_trip_token();
+  salt text := public.new_secret();
+  key text := public.new_secret();
 begin
-  perform public.require_account(p_account, p_key);
   if coalesce(p_new_pin, '') !~ '^[0-9]{6,8}$' then
     raise exception 'pin must be 6-8 digits' using errcode = '22023';
   end if;
-  res := public.attempt_account_pin(p_account, p_old_pin);
+  res := public.attempt_account_pin(v_id, p_old_pin);
   if not (res ->> 'ok')::boolean then
     return res;
   end if;
   update public.accounts
      set pin_salt = salt, pin_hash = public.hash_account_pin(salt, p_new_pin), session_key = key
-   where id = p_account;
+   where id = v_id;
   return res || jsonb_build_object('key', key);
 end;
 $$;
 
--- token 已換發的旅程 token 回 null，前端顯示成「連結已失效」
-create or replace function public.account_list_trips(p_account uuid, p_key text)
-returns table (trip_id uuid, token text, name text, start_date date, end_date date)
+-- 開網站時確認這台裝置的登入憑證還有效，回傳 {id, name}
+create or replace function public.whoami()
+returns jsonb
+language plpgsql
+stable
+security definer
+set search_path = ''
+as $$
+declare
+  v_id uuid := public.require_account();
+begin
+  return (select jsonb_build_object('id', a.id, 'name', a.name) from public.accounts a where a.id = v_id);
+end;
+$$;
+
+-- 所有註冊使用者，給旅程加成員用；只有登入的人看得到
+create or replace function public.list_accounts()
+returns table (id uuid, name text)
 language plpgsql
 stable
 security definer
 set search_path = ''
 as $$
 begin
-  perform public.require_account(p_account, p_key);
-  return query
-    select t.id, case when t.token = a.token then t.token end, t.name, t.start_date, t.end_date
-      from public.account_trips a
-      join public.trips t on t.id = a.trip_id
-     where a.account_id = p_account
-     order by a.added_at desc;
+  perform public.require_account();
+  return query select a.id, a.name from public.accounts a order by lower(a.name);
 end;
 $$;
 
--- 存進帳號前先確認 token 有效，無效時是 42501
-create or replace function public.account_save_trip(p_account uuid, p_key text, p_token text)
+-- ---------- 旅程 RPC ----------
+
+-- 建立者自動成為成員；p_members 是要一起加進來的帳號，p_names 是沒有帳號、只有名字的旅伴
+create or replace function public.create_trip(
+  p_name text, p_start date, p_end date, p_currency text, p_fx_rate numeric, p_members uuid[], p_names text[])
 returns uuid
 language plpgsql
 volatile
@@ -582,58 +580,195 @@ security definer
 set search_path = ''
 as $$
 declare
-  v_trip uuid;
+  v_me uuid := public.require_account();
+  t public.trips;
 begin
-  perform public.require_account(p_account, p_key);
-  select id into v_trip from public.trips where token = p_token;
-  if v_trip is null then
-    raise exception 'invalid trip token' using errcode = '42501';
+  if coalesce(array_length(p_members, 1), 0) + coalesce(array_length(p_names, 1), 0) > 50 then
+    raise exception 'too many participants' using errcode = '22023';
   end if;
-  insert into public.account_trips (account_id, trip_id, token)
-  values (p_account, v_trip, p_token)
-  on conflict (account_id, trip_id) do update set token = excluded.token;
-  return v_trip;
+  insert into public.trips (name, start_date, end_date, currency, fx_rate)
+  values (btrim(p_name), p_start, p_end, upper(p_currency), p_fx_rate)
+  returning * into t;
+  -- 自己排第一，接著是勾選的成員，最後是只有名字的旅伴；名字重複的略過
+  insert into public.participants (trip_id, name, sort_order, account_id)
+  select t.id, a.name, 0, a.id from public.accounts a where a.id = v_me;
+  insert into public.participants (trip_id, name, sort_order, account_id)
+  select t.id, a.name, x.ord, a.id
+    from unnest(p_members) with ordinality as x (aid, ord)
+    join public.accounts a on a.id = x.aid
+   where a.id <> v_me
+  on conflict do nothing;
+  insert into public.participants (trip_id, name, sort_order)
+  select t.id, btrim(n), 100 + o
+    from unnest(p_names) with ordinality as u (n, o)
+   where btrim(n) <> ''
+  on conflict do nothing;
+  return t.id;
 end;
 $$;
 
-create or replace function public.account_remove_trip(p_account uuid, p_key text, p_trip uuid)
+-- 把註冊使用者加進旅程，回傳對應的旅伴 id
+-- 有同名、只有名字的旅伴時直接把那位換成成員（他之前的旅費紀錄跟著保留）；p_participant 指定要換成成員的旅伴
+create or replace function public.add_trip_member(p_trip uuid, p_account uuid, p_participant uuid default null)
+returns uuid
+language plpgsql
+volatile
+security definer
+set search_path = ''
+as $$
+declare
+  v_me uuid := public.require_account();
+  v_name text;
+  v_pid uuid;
+begin
+  if not exists (select 1 from public.participants where trip_id = p_trip and account_id = v_me) then
+    raise exception 'not a member of this trip' using errcode = '42501';
+  end if;
+  select name into v_name from public.accounts where id = p_account;
+  if v_name is null then
+    raise exception 'account not found' using errcode = 'TP404';
+  end if;
+  select id into v_pid from public.participants where trip_id = p_trip and account_id = p_account;
+  if v_pid is not null then
+    return v_pid;
+  end if;
+  if p_participant is not null then
+    update public.participants set account_id = p_account, name = v_name
+     where id = p_participant and trip_id = p_trip and account_id is null
+    returning id into v_pid;
+    if v_pid is null then
+      raise exception 'participant not found' using errcode = 'TP404';
+    end if;
+    return v_pid;
+  end if;
+  update public.participants set account_id = p_account
+   where trip_id = p_trip and name = v_name and account_id is null
+  returning id into v_pid;
+  if v_pid is null then
+    insert into public.participants (trip_id, name, sort_order, account_id)
+    values (p_trip, v_name, coalesce((select max(sort_order) + 1 from public.participants where trip_id = p_trip), 0), p_account)
+    returning id into v_pid;
+  end if;
+  return v_pid;
+end;
+$$;
+
+-- 移出成員：留下名字變成只有名字的旅伴，旅費紀錄不受影響；最後一位成員由 keep_one_member 擋下
+create or replace function public.remove_trip_member(p_participant uuid)
 returns void
 language plpgsql
 volatile
 security definer
 set search_path = ''
 as $$
+declare
+  v_me uuid := public.require_account();
+  v_trip uuid;
 begin
-  perform public.require_account(p_account, p_key);
-  delete from public.account_trips where account_id = p_account and trip_id = p_trip;
+  select trip_id into v_trip from public.participants where id = p_participant;
+  if v_trip is null or not exists (select 1 from public.participants where trip_id = v_trip and account_id = v_me) then
+    raise exception 'not a member of this trip' using errcode = '42501';
+  end if;
+  update public.participants set account_id = null where id = p_participant;
 end;
 $$;
 
-revoke execute on function public.new_trip_token() from public, anon, authenticated;
+-- 費用與分攤一起寫，避免只寫進一半；security invoker 讓 RLS 照常把關
+-- p_expense 帶 id 與 version 時是修改，版本不符丟 TP409、費用已不在丟 TP404
+create or replace function public.save_expense(p_trip uuid, p_expense jsonb, p_shares jsonb)
+returns uuid
+language plpgsql
+volatile
+security invoker
+set search_path = ''
+as $$
+declare
+  v_id uuid := nullif(p_expense ->> 'id', '')::uuid;
+  v_amount numeric := (p_expense ->> 'amount')::numeric;
+  v_currency text := p_expense ->> 'currency';
+  v_mode text := p_expense ->> 'split_mode';
+  v_found uuid;
+begin
+  if p_trip is null or p_trip not in (select public.my_trip_ids()) then
+    raise exception 'not a member of this trip' using errcode = '42501';
+  end if;
+  if v_currency <> 'TWD' and v_currency <> (select currency from public.trips where id = p_trip) then
+    raise exception 'currency must be TWD or the trip currency' using errcode = '22023';
+  end if;
+  if jsonb_typeof(p_shares) <> 'array' or jsonb_array_length(p_shares) = 0 then
+    raise exception 'at least one share required' using errcode = '22023';
+  end if;
+  if v_mode = 'custom' and (
+       exists (select 1 from jsonb_array_elements(p_shares) s where s ->> 'amount' is null)
+       or (select sum((s ->> 'amount')::numeric) from jsonb_array_elements(p_shares) s) <> v_amount) then
+    raise exception 'custom shares must add up to the amount' using errcode = '22023';
+  end if;
+
+  if v_id is null then
+    insert into public.expenses (trip_id, title, amount, currency, payer_id, split_mode, spent_on, spot_id, note, twd_amount)
+    values (p_trip, btrim(p_expense ->> 'title'), v_amount, v_currency, (p_expense ->> 'payer_id')::uuid, v_mode,
+            nullif(p_expense ->> 'spent_on', '')::date, nullif(p_expense ->> 'spot_id', '')::uuid,
+            coalesce(p_expense ->> 'note', ''), (p_expense ->> 'twd_amount')::int)
+    returning id into v_id;
+  else
+    update public.expenses
+       set title = btrim(p_expense ->> 'title'), amount = v_amount, currency = v_currency,
+           payer_id = (p_expense ->> 'payer_id')::uuid, split_mode = v_mode,
+           spent_on = nullif(p_expense ->> 'spent_on', '')::date, spot_id = nullif(p_expense ->> 'spot_id', '')::uuid,
+           note = coalesce(p_expense ->> 'note', ''), twd_amount = (p_expense ->> 'twd_amount')::int
+     where id = v_id and trip_id = p_trip and version = (p_expense ->> 'version')::int
+    returning id into v_found;
+    if v_found is null then
+      if exists (select 1 from public.expenses where id = v_id and trip_id = p_trip) then
+        raise exception 'expense was changed by someone else' using errcode = 'TP409';
+      end if;
+      raise exception 'expense not found' using errcode = 'TP404';
+    end if;
+    delete from public.expense_shares where expense_id = v_id;
+  end if;
+
+  insert into public.expense_shares (expense_id, trip_id, participant_id, amount)
+  select v_id, p_trip, (s ->> 'participant_id')::uuid,
+         case when v_mode = 'custom' then (s ->> 'amount')::numeric end
+    from jsonb_array_elements(p_shares) s;
+  return v_id;
+end;
+$$;
+
+-- ---------- 函式權限 ----------
+
+revoke execute on function public.new_secret() from public, anon, authenticated;
 revoke execute on function public.bump_version() from public, anon, authenticated;
 revoke execute on function public.check_trip_currency() from public, anon, authenticated;
-
-revoke execute on function public.current_trip_id() from public;
-grant execute on function public.current_trip_id() to anon, authenticated;
-revoke execute on function public.create_trip(text, date, date, text, numeric, text[]) from public;
-grant execute on function public.create_trip(text, date, date, text, numeric, text[]) to anon, authenticated;
-revoke execute on function public.regenerate_trip_token() from public;
-grant execute on function public.regenerate_trip_token() to anon, authenticated;
-revoke execute on function public.save_expense(jsonb, jsonb) from public;
-grant execute on function public.save_expense(jsonb, jsonb) to anon, authenticated;
-
+revoke execute on function public.keep_one_member() from public, anon, authenticated;
+revoke execute on function public.sync_member_name() from public, anon, authenticated;
 revoke execute on function public.hash_account_pin(text, text) from public, anon, authenticated;
 revoke execute on function public.attempt_account_pin(uuid, text) from public, anon, authenticated;
-revoke execute on function public.require_account(uuid, text) from public, anon, authenticated;
+revoke execute on function public.require_account() from public, anon, authenticated;
+
+-- RLS 的 policy 以呼叫者身分執行這兩個函式，所以要授權；回傳的只是呼叫者自己的帳號與旅程
+revoke execute on function public.current_account_id() from public;
+grant execute on function public.current_account_id() to anon, authenticated;
+revoke execute on function public.my_trip_ids() from public;
+grant execute on function public.my_trip_ids() to anon, authenticated;
+
+revoke execute on function public.account_name_available(text) from public;
+grant execute on function public.account_name_available(text) to anon, authenticated;
 revoke execute on function public.account_register(text, text) from public;
 grant execute on function public.account_register(text, text) to anon, authenticated;
 revoke execute on function public.account_login(text, text) from public;
 grant execute on function public.account_login(text, text) to anon, authenticated;
-revoke execute on function public.account_change_pin(uuid, text, text, text) from public;
-grant execute on function public.account_change_pin(uuid, text, text, text) to anon, authenticated;
-revoke execute on function public.account_list_trips(uuid, text) from public;
-grant execute on function public.account_list_trips(uuid, text) to anon, authenticated;
-revoke execute on function public.account_save_trip(uuid, text, text) from public;
-grant execute on function public.account_save_trip(uuid, text, text) to anon, authenticated;
-revoke execute on function public.account_remove_trip(uuid, text, uuid) from public;
-grant execute on function public.account_remove_trip(uuid, text, uuid) to anon, authenticated;
+revoke execute on function public.account_change_pin(text, text) from public;
+grant execute on function public.account_change_pin(text, text) to anon, authenticated;
+revoke execute on function public.whoami() from public;
+grant execute on function public.whoami() to anon, authenticated;
+revoke execute on function public.list_accounts() from public;
+grant execute on function public.list_accounts() to anon, authenticated;
+revoke execute on function public.create_trip(text, date, date, text, numeric, uuid[], text[]) from public;
+grant execute on function public.create_trip(text, date, date, text, numeric, uuid[], text[]) to anon, authenticated;
+revoke execute on function public.add_trip_member(uuid, uuid, uuid) from public;
+grant execute on function public.add_trip_member(uuid, uuid, uuid) to anon, authenticated;
+revoke execute on function public.remove_trip_member(uuid) from public;
+grant execute on function public.remove_trip_member(uuid) to anon, authenticated;
+revoke execute on function public.save_expense(uuid, jsonb, jsonb) from public;
+grant execute on function public.save_expense(uuid, jsonb, jsonb) to anon, authenticated;

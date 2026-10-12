@@ -2,15 +2,15 @@ import { defineStore } from 'pinia'
 import { computed, ref, shallowRef } from 'vue'
 import type { Expense, Id, Participant, Spot, SpotItem, TripData } from '@/types'
 import { repo } from '@/data'
-import { ConflictError, InvalidTokenError, type ItemMove, type SpotMove } from '@/data/repository'
+import { AccountSessionError, ConflictError, NoAccessError, type ItemMove, type SpotMove } from '@/data/repository'
 import { RowMissingError } from '@/data/writeCheck'
 import { errorMessage } from '@/composables/useToast'
 import { tripDayCount } from '@/lib/format'
 import { netBalances, simplifyDebts, summaries } from '@/lib/split'
-import { useSavedTrips } from './saved'
+import { useAccountStore } from './account'
 
-/** unknown：這台裝置沒有這趟的連結；checking：讀取中；invalid：連結失效；error：連線失敗 */
-export type TripStatus = 'idle' | 'unknown' | 'checking' | 'ok' | 'invalid' | 'error'
+/** checking：讀取中；noaccess：不是成員或旅程已刪除；error：連線失敗 */
+export type TripStatus = 'idle' | 'checking' | 'ok' | 'noaccess' | 'error'
 
 /** 背景重新讀取的間隔，即時通知漏掉時的保險 */
 const POLL_MS = 120_000
@@ -18,7 +18,7 @@ const POLL_MS = 120_000
 const DEBOUNCE_MS = 300
 
 export const useTripStore = defineStore('trip', () => {
-  const saved = useSavedTrips()
+  const account = useAccountStore()
   const tripId = ref<Id | null>(null)
   const status = ref<TripStatus>('idle')
   const errorText = ref('')
@@ -41,7 +41,22 @@ export const useTripStore = defineStore('trip', () => {
     tripId.value = null
     data.value = null
     status.value = 'idle'
-    repo.setToken(null)
+    repo.setTrip(null)
+  }
+
+  /** 讀寫時發現不是成員或登入失效；回傳 true 表示已處理 */
+  function lostAccess(e: unknown) {
+    if (e instanceof NoAccessError) {
+      stopSync()
+      status.value = 'noaccess'
+      return true
+    }
+    if (e instanceof AccountSessionError) {
+      stopSync()
+      account.expired()
+      return true
+    }
+    return false
   }
 
   async function load(initial = false) {
@@ -51,13 +66,11 @@ export const useTripStore = defineStore('trip', () => {
       if (my !== seq) return
       data.value = d
       status.value = 'ok'
-      saved.touch(d.trip)
       unsubscribe ??= repo.subscribe(scheduleRefresh, (v) => (live.value = v))
     } catch (e) {
       if (my !== seq) return
-      if (e instanceof InvalidTokenError) {
-        stopSync()
-        status.value = 'invalid'
+      if (lostAccess(e)) {
+        // 已處理
       } else if (initial || status.value !== 'ok') {
         errorText.value = errorMessage(e)
         status.value = 'error'
@@ -73,41 +86,13 @@ export const useTripStore = defineStore('trip', () => {
     }, DEBOUNCE_MS)
   }
 
-  /** 以這台裝置存的 token 開啟旅程 */
   async function open(id: Id) {
     if (tripId.value === id && status.value !== 'idle' && status.value !== 'error') return
     close()
     tripId.value = id
-    const entry = saved.find(id)
-    if (!entry) {
-      status.value = 'unknown'
-      return
-    }
-    repo.setToken(entry.token)
+    repo.setTrip(id)
     status.value = 'checking'
     await load(true)
-  }
-
-  /** 用旅程連結的 token 加入；成功回傳旅程 id，連結無效回 null */
-  async function join(token: string): Promise<Id | null> {
-    close()
-    repo.setToken(token)
-    status.value = 'checking'
-    const d = await repo.loadTrip().catch((e: unknown) => {
-      if (e instanceof InvalidTokenError) return null
-      throw e
-    })
-    if (!d) {
-      status.value = 'idle'
-      repo.setToken(null)
-      return null
-    }
-    saved.upsert(token, d.trip)
-    tripId.value = d.trip.id
-    data.value = d
-    status.value = 'ok'
-    unsubscribe = repo.subscribe(scheduleRefresh, (v) => (live.value = v))
-    return d.trip.id
   }
 
   /** 寫入成功後通知其他人並重新讀取；別人改過或已刪除時先讀最新資料再把錯誤丟回給畫面 */
@@ -118,9 +103,8 @@ export const useTripStore = defineStore('trip', () => {
       await load()
       return result
     } catch (e) {
-      if (e instanceof InvalidTokenError) {
-        stopSync()
-        status.value = 'invalid'
+      if (lostAccess(e)) {
+        // 已處理，錯誤照樣丟回給畫面
       } else if (e instanceof ConflictError || e instanceof RowMissingError) {
         await load()
       }
@@ -179,15 +163,6 @@ export const useTripStore = defineStore('trip', () => {
     }
   }
 
-  /** 自己重新產生 token 後改用新 token，不必重新驗證 */
-  function replaceToken(token: string) {
-    if (!tripId.value) return
-    stopSync()
-    saved.setToken(tripId.value, token)
-    repo.setToken(token)
-    void load()
-  }
-
   // 從背景切回來、網路恢復時補抓；即時通知在手機休眠時會漏
   document.addEventListener('visibilitychange', () => {
     if (document.visibilityState === 'visible' && status.value === 'ok') void load()
@@ -202,6 +177,8 @@ export const useTripStore = defineStore('trip', () => {
   const trip = computed(() => data.value?.trip ?? null)
   const participants = computed<Participant[]>(() => data.value?.participants ?? [])
   const participantMap = computed(() => new Map(participants.value.map((p) => [p.id, p])))
+  /** 登入的人在這趟旅程裡的旅伴資料 */
+  const me = computed(() => participants.value.find((p) => p.account_id && p.account_id === account.session?.id) ?? null)
   const dayCount = computed(() => (trip.value ? tripDayCount(trip.value) : 0))
 
   /** 第 1～N 天的景點；天數超出旅程（旅程被改短）或 null 的都歸到口袋名單 */
@@ -266,6 +243,7 @@ export const useTripStore = defineStore('trip', () => {
     trip,
     participants,
     participantMap,
+    me,
     dayCount,
     spotsByDay,
     itemsBySpot,
@@ -274,14 +252,12 @@ export const useTripStore = defineStore('trip', () => {
     settlements,
     memberSummaries,
     open,
-    join,
     close,
     load,
     mutate,
     moveSpots,
     setItemDone,
     moveItems,
-    replaceToken,
     participantName,
   }
 })

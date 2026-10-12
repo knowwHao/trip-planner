@@ -15,9 +15,12 @@ export interface Trip {
   updated_at: string
 }
 
+/** 旅伴：account_id 有值的是成員（看得到、能編輯這趟），null 的是只有名字、只用來分旅費的旅伴 */
 export interface Participant {
   id: Id
   trip_id: Id
+  account_id: Id | null
+  /** 成員的名字固定是帳號名稱 */
   name: string
   sort_order: number
   version: number
@@ -44,7 +47,14 @@ export interface Spot {
   address: string
   map_url: string
   note: string
-  /** 預估花費，以旅程的當地幣別計 */
+  /** 航班（交通類型才用）：起飛時間沿用 start_time，抵達跨日時 arr_day_offset 記 1、2 */
+  airline: string
+  /** 大寫英數，例如 JL802 */
+  flight_no: string
+  dep_airport: string
+  arr_airport: string
+  arr_time: string | null
+  arr_day_offset: number
   sort_key: number
   version: number
   created_at: string
@@ -126,7 +136,21 @@ export type TripPatch = Partial<TripInput>
 
 export type SpotInput = Pick<
   Spot,
-  'category' | 'booking' | 'day' | 'start_time' | 'title' | 'address' | 'map_url' | 'note' | 'sort_key'
+  | 'category'
+  | 'booking'
+  | 'day'
+  | 'start_time'
+  | 'title'
+  | 'address'
+  | 'map_url'
+  | 'note'
+  | 'airline'
+  | 'flight_no'
+  | 'dep_airport'
+  | 'arr_airport'
+  | 'arr_time'
+  | 'arr_day_offset'
+  | 'sort_key'
 >
 export type SpotPatch = Partial<SpotInput>
 
@@ -149,30 +173,18 @@ export type ShareInput = Omit<ExpenseShare, 'expense_id'>
 
 export type TransferInput = Pick<Transfer, 'from_id' | 'to_id' | 'amount' | 'paid_on' | 'note'>
 
-/** 這台裝置開過的旅程；token 只存在本機 */
-export interface SavedTrip {
+/** 首頁「我的旅程」清單的一列 */
+export type TripSummary = Pick<Trip, 'id' | 'name' | 'start_date' | 'end_date'>
+
+/** 註冊的使用者，加成員時從這份清單挑 */
+export interface AccountInfo {
   id: Id
-  token: string
   name: string
-  start_date: string
-  end_date: string
-  opened_at: string
 }
 
 /** 登入後存在這台裝置的帳號憑證；改密碼後舊憑證失效 */
-export interface AccountSession {
-  id: Id
-  name: string
+export interface AccountSession extends AccountInfo {
   key: string
 }
 
 export type PinResult = { ok: true; session: AccountSession } | { ok: false; remaining?: number; lockedUntil?: string }
-
-/** 帳號裡存的旅程；token 為 null 表示旅程連結已被重新產生 */
-export interface AccountTrip {
-  trip_id: Id
-  token: string | null
-  name: string
-  start_date: string
-  end_date: string
-}

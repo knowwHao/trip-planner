@@ -1,16 +1,15 @@
 <script setup lang="ts">
 import { computed, ref } from 'vue'
 import { useRouter } from 'vue-router'
-import { Check, Copy, Eye, EyeOff, LogOut, Pencil, Plus, RefreshCw, Trash2, X } from 'lucide-vue-next'
+import { Check, Link, LogOut, Pencil, Plus, Trash2, UserMinus, UserPlus, X } from 'lucide-vue-next'
 import ParticipantAvatar from '@/components/ParticipantAvatar.vue'
 import ThemeToggle from '@/components/ThemeToggle.vue'
 import TripFormModal from '@/components/TripFormModal.vue'
-import type { Participant, TripInput } from '@/types'
+import MemberPickerModal from '@/components/MemberPickerModal.vue'
+import type { AccountInfo, Participant, TripInput } from '@/types'
 import { repo } from '@/data'
 import { InUseError } from '@/data/repository'
 import { useTripStore } from '@/stores/trip'
-import { useSavedTrips } from '@/stores/saved'
-import { useAccountStore } from '@/stores/account'
 import { saveWithConflict } from '@/composables/useConflict'
 import { confirmDialog } from '@/composables/useConfirm'
 import { errorMessage, toast } from '@/composables/useToast'
@@ -19,8 +18,6 @@ import { currencyInfo, formatRate } from '@/lib/money'
 
 const router = useRouter()
 const store = useTripStore()
-const saved = useSavedTrips()
-const account = useAccountStore()
 const trip = computed(() => store.trip!)
 
 // ---------- 旅程資訊 ----------
@@ -122,59 +119,67 @@ async function removePerson(p: Participant) {
   }
 }
 
-// ---------- 旅程連結 ----------
-const token = computed(() => saved.find(trip.value.id)?.token ?? '')
-const tripUrl = computed(() => (token.value ? `${location.origin}${location.pathname}#/t/${token.value}` : ''))
-// 預設遮住 token，避免設定頁截圖或旁人瞄到就外流
-const showToken = ref(false)
-const displayUrl = computed(() =>
-  showToken.value || !token.value ? tripUrl.value : `${location.origin}${location.pathname}#/t/••••••${token.value.slice(-4)}`,
+// ---------- 成員 ----------
+/** add：加入成員；Participant：把這位只記帳的旅伴換成帳號 */
+const picker = ref<'add' | Participant | null>(null)
+const memberIds = computed(() => store.participants.flatMap((p) => (p.account_id ? [p.account_id] : [])))
+const pickerTitle = computed(() => (picker.value && picker.value !== 'add' ? `「${picker.value.name}」是哪個帳號？` : '加入成員'))
+const pickerHint = computed(() =>
+  picker.value && picker.value !== 'add'
+    ? `換成帳號後，${picker.value.name} 的旅費紀錄都會保留，名字改成帳號名稱，登入後就看得到這趟旅程。`
+    : '加進來的人登入後就能看到並編輯這趟旅程。名單是所有註冊的使用者，找不到人的話請他先註冊。',
 )
-const regenerating = ref(false)
 
-async function copy() {
+async function pick(a: AccountInfo) {
+  const target = picker.value
+  picker.value = null
   try {
-    await navigator.clipboard.writeText(tripUrl.value)
-    toast.success('已複製旅程連結，貼給旅伴就能一起編輯')
-  } catch {
-    showToken.value = true
-    toast.error('無法自動複製，請長按連結手動複製')
+    if (target && target !== 'add') {
+      await store.mutate(() => repo.addMember(a.id, target.id))
+      toast.success(`${target.name} 已換成 ${a.name} 的帳號`)
+    } else {
+      await store.mutate(() => repo.addMember(a.id))
+      toast.success(`已把 ${a.name} 加進旅程`)
+    }
+  } catch (e) {
+    toast.error(errorMessage(e))
   }
 }
 
-async function regenerate() {
+async function removeMember(p: Participant) {
   const ok = await confirmDialog({
-    title: '重新產生旅程連結？',
-    message: '舊連結會立即失效，其他旅伴要用新連結重新開啟。連結不小心外流時才需要這樣做。',
-    confirmText: '重新產生',
+    title: `把 ${p.name} 移出旅程？`,
+    message: `${p.name} 會看不到這趟旅程；旅費紀錄會留著，名字變成只記帳的旅伴。之後可以再加回來。`,
+    confirmText: '移出',
     danger: true,
   })
   if (!ok) return
-  regenerating.value = true
   try {
-    const next = await repo.regenerateToken()
-    store.replaceToken(next)
-    showToken.value = true
-    toast.success('已換成新連結，記得傳給旅伴')
+    await store.mutate(() => repo.removeMember(p.id))
   } catch (e) {
     toast.error(errorMessage(e))
-  } finally {
-    regenerating.value = false
   }
 }
 
-// ---------- 移除與刪除 ----------
-async function forget() {
+// ---------- 退出與刪除 ----------
+async function leave() {
+  const me = store.me
+  if (!me) return
   const ok = await confirmDialog({
-    title: account.session ? '從我的旅程移除？' : '從這台裝置移除？',
-    message: account.session
-      ? '這台裝置和你的帳號都不再記得這趟旅程；資料還在，旅伴也不受影響，之後用旅程連結可以再開。'
-      : '只是這台裝置不再記得這趟旅程，資料還在，之後用旅程連結可以再開。',
-    confirmText: '移除',
+    title: '退出這趟旅程？',
+    message: '你會看不到這趟旅程；你的旅費紀錄會留著。要回來的話請其他成員再把你加進來。',
+    confirmText: '退出',
+    danger: true,
   })
   if (!ok) return
-  saved.remove(trip.value.id)
-  await router.push('/')
+  try {
+    await repo.removeMember(me.id)
+    repo.notify()
+    toast.success(`已退出「${trip.value.name}」`)
+    await router.push('/')
+  } catch (e) {
+    toast.error(errorMessage(e))
+  }
 }
 
 async function destroy() {
@@ -189,7 +194,6 @@ async function destroy() {
   try {
     await repo.deleteTrip()
     repo.notify()
-    saved.remove(trip.value.id)
     toast.success(`已刪除「${name}」`)
     await router.push('/')
   } catch (e) {
@@ -222,7 +226,11 @@ async function destroy() {
     </section>
 
     <section class="card p-5">
-      <h2 class="section-title">旅伴（{{ store.participants.length }}）</h2>
+      <div class="flex items-start justify-between gap-3">
+        <h2 class="section-title">旅伴（{{ store.participants.length }}）</h2>
+        <button type="button" class="btn-ghost -my-2 -mr-2 px-3 py-1.5" @click="picker = 'add'"><UserPlus class="size-4" />加入成員</button>
+      </div>
+      <p class="mt-1 text-xs leading-relaxed text-ink-400">成員看得到也能編輯這趟旅程，任何成員都能加人或移出；只記帳的旅伴只用來分旅費。</p>
       <ul class="mt-3 space-y-1">
         <li v-for="p in store.participants" :key="p.id" class="flex min-h-11 items-center gap-2.5">
           <ParticipantAvatar :id="p.id" :name="p.name" />
@@ -235,32 +243,28 @@ async function destroy() {
             </form>
           </template>
           <template v-else>
-            <span class="min-w-0 flex-1 truncate font-semibold">{{ p.name }}</span>
-            <button type="button" class="icon-btn shrink-0" :aria-label="`改 ${p.name} 的名字`" @click="startRename(p)"><Pencil class="size-4" /></button>
-            <button type="button" class="icon-btn shrink-0" :aria-label="`移除 ${p.name}`" @click="removePerson(p)"><Trash2 class="size-4" /></button>
+            <span class="min-w-0 flex-1">
+              <span class="block truncate font-semibold">{{ p.name }}</span>
+              <span class="block text-xs text-ink-400">{{ p.id === store.me?.id ? '你・成員' : p.account_id ? '成員' : '只記帳' }}</span>
+            </span>
+            <template v-if="p.account_id">
+              <button v-if="p.id !== store.me?.id" type="button" class="icon-btn shrink-0" :aria-label="`把 ${p.name} 移出旅程`" @click="removeMember(p)">
+                <UserMinus class="size-4" />
+              </button>
+            </template>
+            <template v-else>
+              <button type="button" class="icon-btn shrink-0" :aria-label="`把 ${p.name} 換成註冊的帳號`" title="換成帳號" @click="picker = p"><Link class="size-4" /></button>
+              <button type="button" class="icon-btn shrink-0" :aria-label="`改 ${p.name} 的名字`" @click="startRename(p)"><Pencil class="size-4" /></button>
+              <button type="button" class="icon-btn shrink-0" :aria-label="`移除 ${p.name}`" @click="removePerson(p)"><Trash2 class="size-4" /></button>
+            </template>
           </template>
         </li>
       </ul>
       <form class="mt-3 flex gap-2" @submit.prevent="addPeople">
-        <label for="new-people" class="sr-only">新增旅伴</label>
-        <input id="new-people" v-model="newNames" class="input min-w-0 flex-1" placeholder="名字，多位用空白或逗號分開" autocomplete="off" />
+        <label for="new-people" class="sr-only">新增只記帳的旅伴</label>
+        <input id="new-people" v-model="newNames" class="input min-w-0 flex-1" placeholder="只記帳的旅伴名字" autocomplete="off" />
         <button type="submit" class="btn-dark shrink-0" :disabled="adding || !newNames.trim()"><Plus class="size-4" />新增</button>
       </form>
-    </section>
-
-    <section class="card p-5">
-      <h2 class="section-title">旅程連結</h2>
-      <p class="mt-1 text-xs leading-relaxed text-ink-400">拿到這個連結的人都能查看與編輯這趟旅程，請只傳給一起去的旅伴。</p>
-      <div class="mt-3 rounded-2xl bg-ink-50 px-3.5 py-2.5 font-mono text-xs break-all text-ink-600 dark:bg-ink-800 dark:text-ink-200">{{ displayUrl }}</div>
-      <div class="mt-3 flex flex-wrap gap-2">
-        <button type="button" class="btn-primary" :disabled="!tripUrl" @click="copy"><Copy class="size-4" />複製連結</button>
-        <button type="button" class="btn-ghost" :disabled="!tripUrl" :aria-pressed="showToken" @click="showToken = !showToken">
-          <component :is="showToken ? EyeOff : Eye" class="size-4" />{{ showToken ? '隱藏' : '顯示' }}
-        </button>
-        <button type="button" class="btn-ghost" :disabled="regenerating" @click="regenerate">
-          <RefreshCw class="size-4" :class="regenerating && 'animate-spin'" />重新產生
-        </button>
-      </div>
     </section>
 
     <section class="card flex items-center justify-between gap-3 p-5">
@@ -272,13 +276,14 @@ async function destroy() {
     </section>
 
     <section class="card p-5">
-      <h2 class="section-title">移除或刪除</h2>
+      <h2 class="section-title">退出或刪除</h2>
       <div class="mt-3 flex flex-wrap gap-2">
-        <button type="button" class="btn-outline" @click="forget"><LogOut class="size-4" />{{ account.session ? '從我的旅程移除' : '從這台裝置移除' }}</button>
+        <button v-if="store.me" type="button" class="btn-outline" @click="leave"><LogOut class="size-4" />退出這趟旅程</button>
         <button type="button" class="btn-danger" @click="destroy"><Trash2 class="size-4" />刪除整趟旅程</button>
       </div>
     </section>
 
+    <MemberPickerModal :open="picker !== null" :title="pickerTitle" :hint="pickerHint" :joined="memberIds" @close="picker = null" @pick="pick" />
     <TripFormModal :open="editingTrip" :trip="tripBase" :latest="store.trip" :saving="savingTrip" @close="editingTrip = false" @submit="saveTrip" />
   </div>
 </template>

@@ -1,6 +1,6 @@
 <script setup lang="ts">
-import { computed, ref } from 'vue'
-import { AlarmClock, ArrowDownWideNarrow, Bookmark, Plus } from 'lucide-vue-next'
+import { computed, onBeforeUnmount, ref } from 'vue'
+import { AlarmClock, ArrowDownWideNarrow, Bookmark, ChevronRight, Plus } from 'lucide-vue-next'
 import SpotList from '@/components/SpotList.vue'
 import SpotFormModal from '@/components/SpotFormModal.vue'
 import ItemFormModal from '@/components/ItemFormModal.vue'
@@ -24,28 +24,44 @@ const trip = computed(() => store.trip!)
 type Filter = 'all' | 'todo' | SpotCategory
 const filter = ref<Filter>('all')
 
+// 跨過午夜或隔天再打開時，已過的天數要跟著變
+const today = ref(todayYmd())
+const refreshToday = () => (today.value = todayYmd())
+document.addEventListener('visibilitychange', refreshToday)
+onBeforeUnmount(() => document.removeEventListener('visibilitychange', refreshToday))
+
+/** 已經過去的天（今天以前），排在最前面、預設收合 */
+function isPastDay(day: number | null) {
+  return day !== null && day <= store.dayCount && dayDate(trip.value, day) < today.value
+}
+
 const allSections = computed(() => {
-  const list: { day: number | null; title: string; sub: string; spots: Spot[]; today: boolean }[] = []
+  const list: { day: number | null; title: string; sub: string; spots: Spot[]; today: boolean; past: boolean }[] = []
   for (let d = 1; d <= store.dayCount; d++) {
     const date = dayDate(trip.value, d)
-    list.push({ day: d, title: `第 ${d} 天`, sub: formatDate(date), spots: store.spotsByDay.get(d) ?? [], today: date === todayYmd() })
+    list.push({ day: d, title: `第 ${d} 天`, sub: formatDate(date), spots: store.spotsByDay.get(d) ?? [], today: date === today.value, past: isPastDay(d) })
   }
-  list.push({ day: null, title: '口袋名單', sub: '還沒排進行程', spots: store.spotsByDay.get(null) ?? [], today: false })
+  list.push({ day: null, title: '口袋名單', sub: '還沒排進行程', spots: store.spotsByDay.get(null) ?? [], today: false, past: false })
   return list
 })
 
 function matches(s: Spot, f: Filter) {
   if (f === 'all') return true
-  if (f === 'todo') return s.booking === 'todo' && s.day !== null && s.day <= store.dayCount
+  if (f === 'todo') return s.booking === 'todo' && s.day !== null && s.day <= store.dayCount && !isPastDay(s.day)
   return s.category === f
 }
 
-// 篩選時只列有符合項目的天，口袋名單不算待辦
-const sections = computed(() =>
+// 篩選時只列有符合項目的天，口袋名單與已過的天不算待辦
+const filtered = computed(() =>
   filter.value === 'all'
     ? allSections.value
     : allSections.value.map((sec) => ({ ...sec, spots: sec.spots.filter((x) => matches(x, filter.value)) })).filter((sec) => sec.spots.length),
 )
+const showPast = ref(false)
+const pastCount = computed(() => filtered.value.filter((sec) => sec.past).length)
+const sections = computed(() => (showPast.value ? filtered.value : filtered.value.filter((sec) => !sec.past)))
+/** 上方「新增行程」排進的天：旅行中是今天，已結束就排最後一天 */
+const defaultDay = computed(() => allSections.value.find((sec) => sec.day !== null && !sec.past)?.day ?? Math.max(1, store.dayCount))
 
 const todoCount = computed(() => (store.data?.spots ?? []).filter((s) => matches(s, 'todo')).length)
 const usedCategories = computed(() => CATEGORIES.filter((c) => (store.data?.spots ?? []).some((s) => s.category === c.value)))
@@ -188,7 +204,7 @@ function jump(day: number | null) {
           {{ store.dayCount }} 天・{{ spotCount }} 個行程
         </p>
       </div>
-      <button type="button" class="btn-primary" @click="add(1)"><Plus class="size-4" />新增行程</button>
+      <button type="button" class="btn-primary" @click="add(defaultDay)"><Plus class="size-4" />新增行程</button>
     </div>
 
     <div class="sticky top-[57px] z-20 -mx-4 mb-4 overflow-x-auto bg-paper/85 px-4 py-2 backdrop-blur-lg sm:-mx-6 sm:px-6 dark:bg-ink-950/85">
@@ -257,12 +273,31 @@ function jump(day: number | null) {
       {{ filter === 'todo' ? '都訂好了 🎉' : '沒有符合的行程' }}
     </p>
 
-    <section v-for="s in sections" :id="`day-${s.day ?? 'pocket'}`" :key="s.day ?? 'pocket'" class="mb-7 scroll-mt-28">
+    <button
+      v-if="pastCount"
+      type="button"
+      class="mb-5 flex w-full items-center gap-1.5 rounded-2xl border border-dashed border-ink-200 px-4 py-2.5 text-sm font-semibold text-ink-400 transition hover:border-ink-300 dark:border-ink-700"
+      :aria-expanded="showPast"
+      @click="showPast = !showPast"
+    >
+      <ChevronRight class="size-4 transition" :class="showPast && 'rotate-90'" />
+      已過的 {{ pastCount }} 天
+      <span class="ml-auto text-xs font-normal">{{ showPast ? '收起來' : '展開' }}</span>
+    </button>
+
+    <section
+      v-for="s in sections"
+      :id="`day-${s.day ?? 'pocket'}`"
+      :key="s.day ?? 'pocket'"
+      class="mb-7 scroll-mt-28"
+      :class="s.past && 'opacity-60 saturate-50'"
+    >
       <div class="mb-2.5 flex items-center justify-between gap-2">
         <h2 class="min-w-0 truncate">
           <span class="text-lg font-black">{{ s.title }}</span>
           <span class="ml-2 text-sm font-semibold text-ink-400">{{ s.sub }}</span>
           <span v-if="s.today" class="chip-done ml-2 align-middle">今天</span>
+          <span v-else-if="s.past" class="chip-muted ml-2 align-middle">已過</span>
         </h2>
         <div class="flex shrink-0 items-center">
           <button v-if="filter === 'all' && outOfOrder(s.spots)" type="button" class="btn-ghost px-3 py-1.5" @click="sortByTime(s.day, s.spots)">

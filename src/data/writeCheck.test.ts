@@ -1,16 +1,16 @@
 import { describe, expect, it, vi } from 'vitest'
-import { ConflictError, InvalidTokenError } from './repository'
+import { ConflictError, NoAccessError } from './repository'
 import { RowMissingError, verifyAffected } from './writeCheck'
 
 describe('verifyAffected', () => {
-  it('有影響到列就不再查 token', async () => {
-    const tokenOk = vi.fn(async () => true)
-    await verifyAffected(1, 'fail', tokenOk)
-    expect(tokenOk).not.toHaveBeenCalled()
+  it('有影響到列就不再查權限', async () => {
+    const accessOk = vi.fn(async () => true)
+    await verifyAffected(1, 'fail', accessOk)
+    expect(accessOk).not.toHaveBeenCalled()
   })
 
-  it('0 列且 token 失效時丟 InvalidTokenError', async () => {
-    await expect(verifyAffected(0, 'ignore', async () => false)).rejects.toBeInstanceOf(InvalidTokenError)
+  it('0 列且看不到旅程時丟 NoAccessError', async () => {
+    await expect(verifyAffected(0, 'ignore', async () => false)).rejects.toBeInstanceOf(NoAccessError)
   })
 
   it('0 列但這筆還在，代表版本對不上', async () => {
