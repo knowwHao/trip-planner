@@ -1,0 +1,99 @@
+import type { Expense, ExpenseShare, Participant, Spot, Transfer, Trip } from '@/types'
+import { addDays, todayYmd } from '@/lib/format'
+import { SORT_STEP } from '@/lib/order'
+
+export function randomId(): string {
+  return crypto.randomUUID()
+}
+
+export function randomToken(): string {
+  return (crypto.randomUUID() + crypto.randomUUID()).replace(/-/g, '')
+}
+
+type SeedShare = ExpenseShare & { trip_id: string }
+
+/** 示範旅程：一個月後出發的東京五天四夜 */
+export function seedDemoTrip() {
+  const t = new Date().toISOString()
+  const start = addDays(todayYmd(), 30)
+  const trip: Trip & { token: string } = {
+    id: randomId(),
+    token: randomToken(),
+    name: '東京五天四夜（示範）',
+    start_date: start,
+    end_date: addDays(start, 4),
+    currency: 'JPY',
+    fx_rate: 0.21,
+    version: 1,
+    created_at: t,
+    updated_at: t,
+  }
+  const trip_id = trip.id
+  const names = ['小明', '小華', '阿傑', '小美']
+  const participants: Participant[] = names.map((name, i) => ({ id: randomId(), trip_id, name, sort_order: i, version: 1, created_at: t }))
+  const [ming, hua, jie, mei] = participants.map((p) => p.id)
+
+  const spot = (day: number | null, i: number, title: string, extra: Partial<Spot> = {}): Spot => ({
+    id: randomId(),
+    trip_id,
+    day,
+    start_time: null,
+    title,
+    address: '',
+    map_url: '',
+    note: '',
+    est_cost: null,
+    sort_key: (i + 1) * SORT_STEP,
+    version: 1,
+    created_at: t,
+    updated_at: t,
+    ...extra,
+  })
+  const spots: Spot[] = [
+    spot(1, 0, '桃園機場出發', { start_time: '08:30', note: '第二航廈，提早兩小時到' }),
+    spot(1, 1, '成田機場 → 上野', { start_time: '13:00', note: 'Skyliner 約 45 分鐘', est_cost: 2580 }),
+    spot(1, 2, '上野阿美橫丁', { start_time: '16:00', address: '東京都台東区上野4丁目' }),
+    spot(2, 0, '淺草寺', { start_time: '09:00', address: '東京都台東区浅草2-3-1', note: '雷門拍照、仲見世通吃點心' }),
+    spot(2, 1, '東京晴空塔', { start_time: '13:00', address: '東京都墨田区押上1-1-2', est_cost: 3100 }),
+    spot(3, 0, '東京迪士尼海洋', { start_time: '08:00', note: '門票先在官網買好', est_cost: 9400 }),
+    spot(4, 0, '築地場外市場', { start_time: '08:30' }),
+    spot(4, 1, '銀座逛街', { start_time: '11:00' }),
+    spot(4, 2, '澀谷 SKY', { start_time: '17:30', note: '夕陽時段要提早訂', est_cost: 2500 }),
+    spot(5, 0, '回程', { start_time: '14:00' }),
+    spot(null, 0, '吉卜力美術館', { note: '要搶票，搶到再排進行程' }),
+    spot(null, 1, '下北澤古著街'),
+  ]
+
+  const expense = (title: string, amount: number, currency: string, payer_id: string, extra: Partial<Expense> = {}): Expense => ({
+    id: randomId(),
+    trip_id,
+    title,
+    amount,
+    currency,
+    payer_id,
+    split_mode: 'even',
+    spent_on: null,
+    spot_id: null,
+    note: '',
+    version: 1,
+    created_at: t,
+    ...extra,
+  })
+  const flight = expense('機票', 39200, 'TWD', hua, { note: '四人來回' })
+  const hotel = expense('飯店四晚', 120000, 'JPY', ming, { spent_on: start })
+  const dinner = expense('燒肉晚餐', 18000, 'JPY', jie, { split_mode: 'custom', spent_on: addDays(start, 1), note: '小美沒喝酒' })
+  const expenses = [flight, hotel, dinner]
+  const all = (e: Expense): SeedShare[] => participants.map((p) => ({ expense_id: e.id, trip_id, participant_id: p.id, amount: null }))
+  const shares: SeedShare[] = [
+    ...all(flight),
+    ...all(hotel),
+    { expense_id: dinner.id, trip_id, participant_id: ming, amount: 5000 },
+    { expense_id: dinner.id, trip_id, participant_id: hua, amount: 5000 },
+    { expense_id: dinner.id, trip_id, participant_id: jie, amount: 5000 },
+    { expense_id: dinner.id, trip_id, participant_id: mei, amount: 3000 },
+  ]
+  const transfers: Transfer[] = [
+    { id: randomId(), trip_id, from_id: mei, to_id: hua, amount: 9800, paid_on: todayYmd(), note: '機票錢', created_at: t },
+  ]
+  return { trip, data: { participants, spots, expenses, shares, transfers } }
+}
