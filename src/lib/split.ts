@@ -31,21 +31,45 @@ export interface SplitData {
   transfers: Transfer[]
 }
 
+/** 這筆換成新台幣的金額：有實際扣款金額就用它，否則用旅程匯率換算 */
+export function expenseTwd(expense: Pick<Expense, 'amount' | 'currency' | 'twd_amount'>, trip: FxInput): number {
+  return expense.currency !== 'TWD' && expense.twd_amount !== null ? expense.twd_amount : toTwd(expense.amount, expense.currency, trip.fx_rate)
+}
+
+/** 把 total 依 weights 比例拆成整數，餘數給小數部分最大的（同分給排前面的），加總恰好等於 total */
+function apportion(total: number, weights: number[]): number[] {
+  const sum = weights.reduce((s, w) => s + w, 0)
+  if (sum <= 0) return weights.map(() => 0)
+  const exact = weights.map((w) => (total * w) / sum)
+  const result = exact.map(Math.floor)
+  let left = total - result.reduce((s, v) => s + v, 0)
+  const order = exact.map((v, i) => ({ i, frac: v - Math.floor(v) })).sort((a, b) => b.frac - a.frac || a.i - b.i)
+  for (const { i } of order) {
+    if (left <= 0) break
+    result[i]++
+    left--
+  }
+  return result
+}
+
 /**
  * 一筆費用每人要付多少新台幣
  * 平分：先把總額換成新台幣，每人無條件進位，零頭由付錢的人多收（與球友記帳相同）
- * 指定金額：每人的金額各自換成新台幣後四捨五入
+ * 指定金額：沒有實際扣款金額時，每人的金額各自用旅程匯率換算後四捨五入；
+ * 有實際扣款金額時，依每人金額的比例分配扣款金額，加總恰好等於扣款金額
  */
 export function expenseDues(
-  expense: Pick<Expense, 'amount' | 'currency' | 'split_mode'>,
+  expense: Pick<Expense, 'amount' | 'currency' | 'split_mode'> & Partial<Pick<Expense, 'twd_amount'>>,
   shares: Pick<ExpenseShare, 'participant_id' | 'amount'>[],
   trip: FxInput,
 ): ExpenseDues {
-  const twdTotal = toTwd(expense.amount, expense.currency, trip.fx_rate)
+  const charged = expense.currency !== 'TWD' && expense.twd_amount != null ? expense.twd_amount : null
+  const twdTotal = charged ?? toTwd(expense.amount, expense.currency, trip.fx_rate)
   let dues: DueShare[]
   if (expense.split_mode === 'custom') {
+    const parts = charged !== null ? apportion(charged, shares.map((s) => toMinor(s.amount ?? 0, expense.currency))) : null
     dues = shares
-      .map((s) => ({ participant_id: s.participant_id, due: toTwd(s.amount ?? 0, expense.currency, trip.fx_rate) }))
+      .map((s, i) => ({ participant_id: s.participant_id, due: parts ? parts[i] : toTwd(s.amount ?? 0, expense.currency, trip.fx_rate) }))
       .filter((d) => d.due > 0)
   } else {
     const ids = [...new Set(shares.map((s) => s.participant_id))]

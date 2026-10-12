@@ -36,6 +36,8 @@ export function seedDemoTrip() {
   const spot = (day: number | null, i: number, title: string, extra: Partial<Spot> = {}): Spot => ({
     id: randomId(),
     trip_id,
+    category: 'sight',
+    booking: null,
     day,
     start_time: null,
     title,
@@ -50,18 +52,21 @@ export function seedDemoTrip() {
     ...extra,
   })
   const spots: Spot[] = [
-    spot(1, 0, '桃園機場出發', { start_time: '08:30', note: '第二航廈，提早兩小時到' }),
-    spot(1, 1, '成田機場 → 上野', { start_time: '13:00', note: 'Skyliner 約 45 分鐘', est_cost: 2580 }),
-    spot(1, 2, '上野阿美橫丁', { start_time: '16:00', address: '東京都台東区上野4丁目' }),
-    spot(2, 0, '淺草寺', { start_time: '09:00', address: '東京都台東区浅草2-3-1', note: '雷門拍照、仲見世通吃點心' }),
-    spot(2, 1, '東京晴空塔', { start_time: '13:00', address: '東京都墨田区押上1-1-2', est_cost: 3100 }),
-    spot(3, 0, '東京迪士尼海洋', { start_time: '08:00', note: '門票先在官網買好', est_cost: 9400 }),
-    spot(4, 0, '築地場外市場', { start_time: '08:30' }),
-    spot(4, 1, '銀座逛街', { start_time: '11:00' }),
-    spot(4, 2, '澀谷 SKY', { start_time: '17:30', note: '夕陽時段要提早訂', est_cost: 2500 }),
-    spot(5, 0, '回程', { start_time: '14:00' }),
-    spot(null, 0, '吉卜力美術館', { note: '要搶票，搶到再排進行程' }),
-    spot(null, 1, '下北澤古著街'),
+    spot(1, 0, '桃園機場出發', { category: 'transport', booking: 'done', start_time: '08:30', note: '第二航廈，提早兩小時到' }),
+    spot(1, 1, '成田機場 → 上野', { category: 'transport', booking: 'todo', start_time: '13:00', note: 'Skyliner 約 45 分鐘', est_cost: 2580 }),
+    spot(1, 2, '上野阿美橫丁', { category: 'shop', start_time: '16:00', address: '東京都台東区上野4丁目' }),
+    spot(1, 3, '一蘭拉麵 上野店', { category: 'food', booking: 'none', start_time: '19:00', note: '不能訂位，可能要排隊' }),
+    spot(1, 4, '上野站前飯店', { category: 'stay', booking: 'done', start_time: '21:00', note: '訂位代號 AB1234' }),
+    spot(2, 0, '淺草寺', { booking: 'none', start_time: '09:00', address: '東京都台東区浅草2-3-1', note: '雷門拍照、仲見世通吃點心' }),
+    spot(2, 1, '東京晴空塔', { booking: 'done', start_time: '13:00', address: '東京都墨田区押上1-1-2', est_cost: 3100 }),
+    spot(2, 2, '敘敘苑 晴空塔店', { category: 'food', booking: 'todo', start_time: '18:00', note: '要先在官網訂位', est_cost: 8000 }),
+    spot(3, 0, '東京迪士尼海洋', { booking: 'todo', start_time: '08:00', note: '門票先在官網買好', est_cost: 9400 }),
+    spot(4, 0, '築地場外市場', { category: 'food', booking: 'none', start_time: '08:30' }),
+    spot(4, 1, '銀座逛街', { category: 'shop', start_time: '11:00' }),
+    spot(4, 2, '澀谷 SKY', { booking: 'todo', start_time: '17:30', note: '夕陽時段要提早訂', est_cost: 2500 }),
+    spot(5, 0, '回程', { category: 'transport', booking: 'done', start_time: '14:00' }),
+    spot(null, 0, '吉卜力美術館', { booking: 'todo', note: '要搶票，搶到再排進行程' }),
+    spot(null, 1, '下北澤古著街', { category: 'shop' }),
   ]
 
   const expense = (title: string, amount: number, currency: string, payer_id: string, extra: Partial<Expense> = {}): Expense => ({
@@ -75,6 +80,7 @@ export function seedDemoTrip() {
     spent_on: null,
     spot_id: null,
     note: '',
+    twd_amount: null,
     version: 1,
     created_at: t,
     ...extra,
@@ -82,7 +88,14 @@ export function seedDemoTrip() {
   const flight = expense('機票', 39200, 'TWD', hua, { note: '四人來回' })
   const hotel = expense('飯店四晚', 120000, 'JPY', ming, { spent_on: start })
   const dinner = expense('燒肉晚餐', 18000, 'JPY', jie, { split_mode: 'custom', spent_on: addDays(start, 1), note: '小美沒喝酒' })
-  const expenses = [flight, hotel, dinner]
+  // 一次結帳裡有幫別人買的東西：照信用卡實際扣款換算
+  const drugstore = expense('松本清藥妝', 12800, 'JPY', mei, {
+    split_mode: 'custom',
+    spent_on: addDays(start, 3),
+    twd_amount: 2741,
+    note: '幫小明買眼藥水、幫阿傑買合利他命',
+  })
+  const expenses = [flight, hotel, dinner, drugstore]
   const all = (e: Expense): SeedShare[] => participants.map((p) => ({ expense_id: e.id, trip_id, participant_id: p.id, amount: null }))
   const shares: SeedShare[] = [
     ...all(flight),
@@ -91,6 +104,9 @@ export function seedDemoTrip() {
     { expense_id: dinner.id, trip_id, participant_id: hua, amount: 5000 },
     { expense_id: dinner.id, trip_id, participant_id: jie, amount: 5000 },
     { expense_id: dinner.id, trip_id, participant_id: mei, amount: 3000 },
+    { expense_id: drugstore.id, trip_id, participant_id: ming, amount: 1980 },
+    { expense_id: drugstore.id, trip_id, participant_id: jie, amount: 3480 },
+    { expense_id: drugstore.id, trip_id, participant_id: mei, amount: 7340 },
   ]
   const transfers: Transfer[] = [
     { id: randomId(), trip_id, from_id: mei, to_id: hua, amount: 9800, paid_on: todayYmd(), note: '機票錢', created_at: t },

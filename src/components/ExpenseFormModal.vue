@@ -11,7 +11,7 @@ import { saveWithConflict } from '@/composables/useConflict'
 import { confirmDialog } from '@/composables/useConfirm'
 import { errorMessage, toast } from '@/composables/useToast'
 import { dayDate, formatDate, todayYmd } from '@/lib/format'
-import { currencyDigits, currencyInfo, formatMoney, fromMinor, MAX_AMOUNT, parseAmount, toMinor, toTwd } from '@/lib/money'
+import { currencyDigits, currencyInfo, formatMoney, formatRate, fromMinor, MAX_AMOUNT, parseAmount, parseSum, toMinor, toTwd } from '@/lib/money'
 import { customRemaining, expenseDues } from '@/lib/split'
 
 const props = defineProps<{ open: boolean; expense?: Expense | null }>()
@@ -25,6 +25,8 @@ const form = reactive({
   title: '',
   amount: '',
   currency: 'TWD',
+  /** 實際扣款（新台幣），只有外幣旅費用得到 */
+  charged: '',
   payer: '' as Id,
   date: '',
   spot: '' as Id,
@@ -49,6 +51,7 @@ function fill(e: Expense | null | undefined) {
     title: e?.title ?? '',
     amount: e ? String(e.amount) : '',
     currency: e?.currency ?? trip.value.currency,
+    charged: e?.twd_amount != null ? String(e.twd_amount) : '',
     payer: e?.payer_id ?? people.value[0]?.id ?? '',
     date: e ? (e.spent_on ?? '') : defaultDate(),
     spot: e?.spot_id ?? '',
@@ -71,8 +74,12 @@ const gone = computed(() => !!base.value && !latest.value)
 const stale = computed(() => !!base.value && !!latest.value && latest.value.version !== base.value.version)
 
 const currencies = computed(() => [...new Set([trip.value.currency, 'TWD'])])
-const amount = computed(() => parseAmount(form.amount, form.currency))
-const customValues = computed(() => people.value.map((p) => parseAmount(form.custom[p.id] ?? '', form.currency)))
+const amount = computed(() => parseSum(form.amount, form.currency))
+const customValues = computed(() => people.value.map((p) => parseSum(form.custom[p.id] ?? '', form.currency)))
+const foreign = computed(() => form.currency !== 'TWD')
+const charged = computed(() => (foreign.value ? parseAmount(form.charged, 'TWD') : null))
+/** 實際扣款換算出來的匯率，只用來顯示 */
+const chargedRate = computed(() => (charged.value && amount.value && amount.value > 0 ? charged.value / amount.value : null))
 const remaining = computed(() => (amount.value && amount.value > 0 ? customRemaining(amount.value, customValues.value, form.currency) : 0))
 
 const shares = computed<ShareInput[]>(() =>
@@ -85,7 +92,11 @@ const shares = computed<ShareInput[]>(() =>
 
 const preview = computed(() =>
   amount.value && amount.value > 0
-    ? expenseDues({ amount: amount.value, currency: form.currency, split_mode: form.mode }, shares.value, trip.value)
+    ? expenseDues(
+        { amount: amount.value, currency: form.currency, split_mode: form.mode, twd_amount: charged.value && charged.value > 0 ? charged.value : null },
+        shares.value,
+        trip.value,
+      )
     : null,
 )
 
@@ -95,6 +106,9 @@ const errors = computed(() => {
   else if ([...form.title.trim()].length > 60) e.title = '最多 60 個字'
   if (amount.value === null) e.amount = '請輸入金額'
   else if (!(amount.value > 0 && amount.value <= MAX_AMOUNT)) e.amount = currencyDigits(form.currency) ? `金額格式不對（最多 ${currencyDigits(form.currency)} 位小數）` : '金額格式不對（不能有小數）'
+  if (charged.value !== null && !(Number.isInteger(charged.value) && charged.value > 0 && charged.value <= MAX_AMOUNT)) {
+    e.charged = '請輸入正整數，或留空用旅程匯率換算'
+  }
   if (!form.payer) e.payer = '請選擇誰付的'
   if (!shares.value.length) e.split = form.mode === 'even' ? '至少勾一個人' : '至少填一個人的金額'
   if (form.mode === 'custom') {
@@ -120,6 +134,16 @@ function splitRemaining() {
   })
 }
 
+/** 幫別人買東西最常見的情況：其他人填好自己那幾項，剩下的都是付錢的人自己的 */
+function remainingToPayer() {
+  if (!form.payer || remaining.value <= 0) return
+  const current = parseSum(form.custom[form.payer] ?? '', form.currency)
+  const base = current && current > 0 ? toMinor(current, form.currency) : 0
+  form.custom[form.payer] = String(fromMinor(base + toMinor(remaining.value, form.currency), form.currency))
+}
+
+const payerName = computed(() => store.participantName(form.payer))
+
 const spotOptions = computed(() =>
   (store.data?.spots ?? [])
     .filter((s) => s.day !== null && s.day <= store.dayCount)
@@ -141,6 +165,7 @@ async function submit() {
     spent_on: form.date || null,
     spot_id: form.spot || null,
     note: form.note.trim(),
+    twd_amount: foreign.value ? charged.value : null,
   }
   const list = shares.value
   saving.value = true
@@ -209,9 +234,19 @@ async function remove() {
           </div>
         </div>
         <p v-if="touched && errors.amount" class="mt-1 text-xs text-rose-500">{{ errors.amount }}</p>
-        <p v-else-if="amount && form.currency !== 'TWD'" class="num mt-1 text-xs text-ink-400">
-          ≈ {{ formatMoney(toTwd(amount, form.currency, trip.fx_rate)) }}（1 {{ form.currency }} = {{ trip.fx_rate }} 元，{{ currencyInfo(form.currency).name }}）
+        <p v-else-if="amount && foreign && !charged" class="num mt-1 text-xs text-ink-400">
+          ≈ {{ formatMoney(toTwd(amount, form.currency, trip.fx_rate)) }}（旅程匯率 1 {{ form.currency }} = {{ formatRate(trip.fx_rate) }} 元，{{ currencyInfo(form.currency).name }}）
         </p>
+      </div>
+
+      <div v-if="foreign">
+        <label class="label" for="exp-charged">實際扣款（新台幣，選填）</label>
+        <input id="exp-charged" v-model="form.charged" class="input num" inputmode="numeric" placeholder="信用卡帳單上的金額" autocomplete="off" />
+        <p v-if="touched && errors.charged" class="mt-1 text-xs text-rose-500">{{ errors.charged }}</p>
+        <p v-else-if="chargedRate" class="num mt-1 text-xs text-ink-400">
+          這筆用實際匯率 1 {{ form.currency }} ≈ {{ formatRate(chargedRate) }} 元換算，不受旅程匯率影響
+        </p>
+        <p v-else class="mt-1 text-xs text-ink-400">刷卡或換匯的實際金額，有填就照它換算；留空用旅程匯率</p>
       </div>
 
       <div class="grid grid-cols-2 gap-3">
@@ -275,16 +310,20 @@ async function remove() {
               :id="`exp-custom-${p.id}`"
               v-model="form.custom[p.id]"
               class="input num w-32 shrink-0 py-2 text-right"
-              inputmode="decimal"
+              inputmode="text"
               placeholder="0"
               autocomplete="off"
             />
           </div>
+          <p class="text-xs text-ink-400">幫別人買的填他那幾項的金額，可以直接輸入加法（例如 1200+3400）；剩下的用下面的按鈕分配</p>
           <div class="flex items-center justify-between gap-2 pt-1">
             <span class="num text-xs" :class="remaining === 0 ? 'text-sea-600 dark:text-sea-400' : 'text-amber-600 dark:text-amber-300'">
               {{ remaining === 0 ? '金額剛好分完' : remaining > 0 ? `還剩 ${formatMoney(remaining, form.currency)}` : `多了 ${formatMoney(-remaining, form.currency)}` }}
             </span>
-            <button v-if="remaining > 0" type="button" class="text-xs font-semibold text-sea-700 dark:text-sea-300" @click="splitRemaining">剩下的平分給空白的人</button>
+            <div v-if="remaining > 0" class="flex flex-wrap justify-end gap-x-3 gap-y-1">
+              <button v-if="form.payer" type="button" class="text-xs font-semibold text-sea-700 dark:text-sea-300" @click="remainingToPayer">剩下的都算{{ payerName }}的</button>
+              <button type="button" class="text-xs font-semibold text-sea-700 dark:text-sea-300" @click="splitRemaining">剩下的平分給空白的人</button>
+            </div>
           </div>
         </div>
         <p v-if="touched && errors.split" class="mt-1 text-xs text-rose-500">{{ errors.split }}</p>
@@ -292,7 +331,7 @@ async function remove() {
           <template v-if="form.mode === 'even'">
             每人 {{ formatMoney(preview.dues[0].due) }}<template v-if="preview.surplus">（除不盡進位，付錢的人多收 {{ formatMoney(preview.surplus) }}）</template>
           </template>
-          <template v-else-if="form.currency !== 'TWD'">
+          <template v-else-if="foreign">
             換成新台幣：{{ preview.dues.map((d) => `${store.participantName(d.participant_id)} ${formatMoney(d.due)}`).join('、') }}
           </template>
         </p>

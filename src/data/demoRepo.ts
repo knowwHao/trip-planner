@@ -47,7 +47,14 @@ function readStorage(): DemoDb | null {
     const raw = localStorage.getItem(DB_KEY)
     if (!raw) return null
     const db = JSON.parse(raw) as DemoDb
-    return Array.isArray(db.trips) && Array.isArray(db.spots) ? db : null
+    if (!(Array.isArray(db.trips) && Array.isArray(db.spots))) return null
+    // 加入類型、預約狀態與實際扣款前存下的示範資料，與 schema.sql 升級時一樣補上預設值
+    for (const s of db.spots) {
+      s.category ??= 'sight'
+      s.booking ??= null
+    }
+    for (const e of db.expenses) e.twd_amount ??= null
+    return db
   } catch {
     return null
   }

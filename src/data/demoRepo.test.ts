@@ -28,7 +28,7 @@ describe('DemoRepo', () => {
     repo.setToken(null)
     await expect(repo.loadTrip()).rejects.toBeInstanceOf(InvalidTokenError)
     repo.setToken('x'.repeat(64))
-    await expect(repo.createSpot({ day: 1, start_time: null, title: 'x', address: '', map_url: '', note: '', est_cost: null, sort_key: 1 })).rejects.toBeInstanceOf(InvalidTokenError)
+    await expect(repo.createSpot({ category: 'sight', booking: null, day: 1, start_time: null, title: 'x', address: '', map_url: '', note: '', est_cost: null, sort_key: 1 })).rejects.toBeInstanceOf(InvalidTokenError)
   })
 
   it('旅伴去重、略過空白', async () => {
@@ -38,7 +38,7 @@ describe('DemoRepo', () => {
 
   it('景點改內容加版本、搬動不加，舊版本更新是衝突', async () => {
     const { repo } = await setup()
-    const s = await repo.createSpot({ day: 1, start_time: null, title: '大阪城', address: '', map_url: '', note: '', est_cost: null, sort_key: 1 })
+    const s = await repo.createSpot({ category: 'sight', booking: null, day: 1, start_time: null, title: '大阪城', address: '', map_url: '', note: '', est_cost: null, sort_key: 1 })
     await repo.moveSpots([{ id: s.id, day: 2, sort_key: 5 }])
     expect((await repo.loadTrip()).spots[0]).toMatchObject({ day: 2, version: 1 })
     await repo.updateSpot(s.id, 1, { title: '通天閣' })
@@ -48,7 +48,7 @@ describe('DemoRepo', () => {
 
   it('一次搬動多個景點全部生效', async () => {
     const { repo } = await setup()
-    const base = { day: 1, start_time: null, address: '', map_url: '', note: '', est_cost: null }
+    const base = { category: 'sight' as const, booking: null, day: 1, start_time: null, address: '', map_url: '', note: '', est_cost: null }
     const a = await repo.createSpot({ ...base, title: 'A', sort_key: 1 })
     const b = await repo.createSpot({ ...base, title: 'B', sort_key: 2 })
     await repo.moveSpots([
@@ -64,7 +64,7 @@ describe('DemoRepo', () => {
   it('費用：指定金額要加總等於總額、有紀錄的旅伴不能刪、有外幣費用不能換幣別', async () => {
     const { repo } = await setup()
     const [a, b] = (await repo.loadTrip()).participants.map((p) => p.id)
-    const base = { title: '晚餐', amount: 3000, currency: 'JPY', payer_id: a, spent_on: null, spot_id: null, note: '' }
+    const base = { title: '晚餐', amount: 3000, currency: 'JPY', payer_id: a, spent_on: null, spot_id: null, note: '', twd_amount: null }
     await expect(
       repo.saveExpense({ ...base, split_mode: 'custom' }, [{ participant_id: a, amount: 1000 }]),
     ).rejects.toThrow()

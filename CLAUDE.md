@@ -25,7 +25,7 @@ npm run build        # vue-tsc 型別檢查 + vite build 到 dist/
 - **改 schema**：每張表都要開 RLS、有 `trip_all` policy（子表 `using`／`with check` 都是 `trip_id = (select current_trip_id())`）、
   明確 grant 給 anon／authenticated（預設權限已收回）且收回 truncate；子表參照旅伴／景點一律用帶 `trip_id` 的複合外鍵；
   新增 view 一律 `with (security_invoker = true)`；新增函式要 `revoke execute ... from public` 再明確 grant；
-  有內容欄位的表要掛 `bump_version` 觸發器（排序欄位列在它的 skip 清單裡）；
+  有內容欄位的表要掛 `bump_version` 觸發器（排序欄位列在它的 skip 清單裡）；新欄位一律寫在「後來加的欄位」段落用 `add column if not exists`，跨欄位 check 用具名 constraint 包在 `if not exists` 裡；
   `schema.sql` 要可重複執行，也要能套在舊版 DB 上升級；改完用 PGlite（`@electric-sql/pglite`，不在依賴內，臨時裝在專案外）
   實跑 `schema.sql` 兩次，需先替身 `anon`／`authenticated` 角色，以 `set_config('request.headers', '{"x-trip-token":"…"}', true)` 模擬 header，
   驗沒帶／帶錯 token 讀不到也寫不進、別趟的 token 碰不到這趟；並同步 `src/types.ts`、兩個 repo 實作與 `src/data/demoSeed.ts`
@@ -40,7 +40,8 @@ npm run build        # vue-tsc 型別檢查 + vite build 到 dist/
 ## 目錄地圖
 
 - `src/lib/split.ts`：分攤（平分／指定金額）、淨額、最少轉帳、每人摘要的**唯一來源**（純函式），測試 `split.test.ts`
-- `src/lib/money.ts`：幣別清單、小數位數、換算、金額格式與解析；`format.ts`：日期與旅程天數；`maps.ts`：Google 地圖連結；`order.ts`：排序值（取中間值）
+- `src/lib/category.ts`：行程類型與預約狀態的文字、預設值、卡片上點標籤的切換，要與 schema 的 `spots.category` check 和 `spots_booking_fits_category` 一致
+- `src/lib/money.ts`：幣別清單、小數位數、換算、金額格式與解析（`parseSum` 可輸入加法）；`format.ts`：日期與旅程天數；`maps.ts`：Google 地圖連結；`order.ts`：排序值（取中間值）
 - `src/data/repository.ts`：資料層介面與 `InvalidTokenError`／`ConflictError`／`InUseError`；實作 `supabaseRepo.ts`（Supabase + Realtime 廣播）、
   `demoRepo.ts`（localStorage，以 `guard()` 模擬 RLS、版本號與刪除限制，BroadcastChannel 模擬即時同步，測試 `demoRepo.test.ts`）
 - `src/data/writeCheck.ts`：RLS 擋下或版本不符時 update／delete 只會 0 列不報錯，`supabaseRepo.ts` 一律 `.select(…)` 後經 `expectAffected` 判定
@@ -61,6 +62,8 @@ npm run build        # vue-tsc 型別檢查 + vite build 到 dist/
 
 - 幣別與匯率（每趟一個當地幣別、旅費可記當地幣別或新台幣、結算用目前匯率）→ README「幣別與匯率」、`toTwd`
 - 平分無條件進位、零頭由付錢的人多收；指定金額加總要等於總額、各自換算後四捨五入 → README「分攤」、`expenseDues`
+- 實際扣款（外幣旅費照帳單金額換算，指定金額時依比例分配且加總恰好等於扣款）→ README「實際扣款」、`expenseDues`／`expenseTwd`
+- 行程類型與預約狀態（預設「還沒」、「無需」不顯示、口袋名單不算待辦）→ README「類型與預約狀態」、`src/lib/category.ts`
 - 要收／要付（全體加總必為 0）與最少轉帳 → README「要收／要付與轉帳建議」、`netBalances`／`simplifyDebts`
 - 同時編輯的行為 → README「同時編輯」
 - 改了上述任一規則，README 對應段落要同步更新

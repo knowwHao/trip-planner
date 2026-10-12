@@ -13,6 +13,7 @@ function expense(over: Partial<Expense> & Pick<Expense, 'id' | 'amount' | 'payer
     spent_on: null,
     spot_id: null,
     note: '',
+    twd_amount: null,
     version: 1,
     created_at: '2026-01-01T00:00:00Z',
     ...over,
@@ -67,6 +68,49 @@ describe('expenseDues', () => {
     const r = expenseDues(expense({ id: 'e', amount: 300, payer_id: 'a' }), [], trip)
     expect(r.dues).toEqual([])
     expect(r.surplus).toBe(0)
+  })
+})
+
+describe('expenseDues：有實際扣款金額', () => {
+  it('平分時用實際扣款金額，不用旅程匯率', () => {
+    const r = expenseDues(expense({ id: 'e', amount: 2400, currency: 'JPY', payer_id: 'a', twd_amount: 501 }), even('e', 'a', 'b'), trip)
+    expect(r.twdTotal).toBe(501)
+    expect(r.dues.map((d) => d.due)).toEqual([251, 251])
+    expect(r.surplus).toBe(1)
+  })
+
+  it('指定金額依比例分配實際扣款，加總剛好等於扣款金額', () => {
+    const shares: ExpenseShare[] = [
+      { expense_id: 'e', participant_id: 'a', amount: 5000 },
+      { expense_id: 'e', participant_id: 'b', amount: 3000 },
+      { expense_id: 'e', participant_id: 'c', amount: 2000 },
+    ]
+    const r = expenseDues(expense({ id: 'e', amount: 10000, currency: 'JPY', payer_id: 'a', split_mode: 'custom', twd_amount: 2150 }), shares, trip)
+    expect(r.dues.map((d) => d.due)).toEqual([1075, 645, 430])
+    expect(r.twdTotal).toBe(2150)
+    expect(r.surplus).toBe(0)
+  })
+
+  it('除不盡時把餘數給小數部分最大的人，加總不變', () => {
+    const shares: ExpenseShare[] = [
+      { expense_id: 'e', participant_id: 'a', amount: 1 },
+      { expense_id: 'e', participant_id: 'b', amount: 1 },
+      { expense_id: 'e', participant_id: 'c', amount: 1 },
+    ]
+    const r = expenseDues(expense({ id: 'e', amount: 3, currency: 'USD', payer_id: 'a', split_mode: 'custom', twd_amount: 100 }), shares, trip)
+    expect(r.dues.map((d) => d.due)).toEqual([34, 33, 33])
+    expect(r.surplus).toBe(0)
+  })
+
+  it('旅程匯率改了，有實際扣款金額的不受影響', () => {
+    const data: SplitData = {
+      trip: { currency: 'JPY', fx_rate: 0.5 },
+      participants: [{ id: 'a' }, { id: 'b' }],
+      expenses: [expense({ id: 'e', amount: 1000, currency: 'JPY', payer_id: 'a', twd_amount: 220 })],
+      shares: even('e', 'a', 'b'),
+      transfers: [],
+    }
+    expect(Object.fromEntries(netBalances(data))).toEqual({ a: 110, b: -110 })
   })
 })
 

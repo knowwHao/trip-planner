@@ -1,12 +1,16 @@
 <script setup lang="ts">
-import { onBeforeUnmount, onMounted, ref } from 'vue'
+import { onBeforeUnmount, onMounted, ref, watch } from 'vue'
 import Sortable from 'sortablejs'
 import SpotCard from './SpotCard.vue'
 import type { Id, Spot } from '@/types'
 
-const props = defineProps<{ spots: Spot[]; day: number | null; currency: string; fxRate: number }>()
+const props = withDefaults(
+  defineProps<{ spots: Spot[]; day: number | null; currency: string; fxRate: number; draggable?: boolean }>(),
+  { draggable: true },
+)
 const emit = defineEmits<{
   edit: [spot: Spot]
+  booking: [spot: Spot]
   /** 拖到 day 這一天的第 index 個位置（以拖曳前的清單、扣掉被拖的那筆來算） */
   move: [id: Id, day: number | null, index: number]
 }>()
@@ -18,6 +22,7 @@ onMounted(() => {
   sortable = Sortable.create(el.value!, {
     group: 'spots',
     handle: '.drag-handle',
+    disabled: !props.draggable,
     animation: 150,
     // 不用瀏覽器原生拖放，滑鼠與觸控走同一套邏輯，iOS Safari 上也比較穩
     forceFallback: true,
@@ -36,6 +41,12 @@ onMounted(() => {
   })
 })
 
+// 篩選時清單只有一部分，拖曳算出的位置會對不上完整清單，所以關掉
+watch(
+  () => props.draggable,
+  (v) => sortable?.option('disabled', !v),
+)
+
 onBeforeUnmount(() => sortable?.destroy())
 </script>
 
@@ -43,7 +54,7 @@ onBeforeUnmount(() => sortable?.destroy())
   <div class="relative">
     <div ref="el" :data-day="day ?? ''" class="min-h-14 space-y-2">
       <div v-for="s in props.spots" :key="s.id" :data-id="s.id">
-        <SpotCard :spot="s" :currency="currency" :fx-rate="fxRate" @edit="emit('edit', s)" />
+        <SpotCard :spot="s" :currency="currency" :fx-rate="fxRate" :draggable="draggable" @edit="emit('edit', s)" @booking="emit('booking', s)" />
       </div>
     </div>
     <p

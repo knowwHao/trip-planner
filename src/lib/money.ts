@@ -81,6 +81,15 @@ export function parseAmount(raw: string | number | null | undefined, code: strin
   return decimals > currencyDigits(code) ? NaN : n
 }
 
+/** 同 parseAmount，但可以輸入加法（1200+3400），方便把好幾個品項加起來 */
+export function parseSum(raw: string | null | undefined, code: string): number | null {
+  const s = (raw ?? '').trim()
+  if (!s) return null
+  const parts = s.split('+').map((p) => parseAmount(p, code))
+  if (parts.some((p) => p === null || Number.isNaN(p))) return NaN
+  return fromMinor(parts.reduce<number>((sum, p) => sum + toMinor(p!, code), 0), code)
+}
+
 /** 匯率顯示到最多 6 位小數，去掉尾巴的 0 */
 export function formatRate(rate: number): string {
   return String(Number(rate.toFixed(6)))

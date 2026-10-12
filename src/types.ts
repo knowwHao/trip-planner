@@ -24,9 +24,18 @@ export interface Participant {
   created_at: string
 }
 
+/** 行程項目的類型，清單與顯示文字在 src/lib/category.ts */
+export type SpotCategory = 'sight' | 'food' | 'shop' | 'activity' | 'transport' | 'stay' | 'other'
+
+/** 預約狀態：done 已訂／已買、todo 還沒、none 不需要；畫面文字依類型而定 */
+export type BookingStatus = 'done' | 'todo' | 'none'
+
 export interface Spot {
   id: Id
   trip_id: Id
+  category: SpotCategory
+  /** null 是沒設定（加入類型前建立的景點），沒有預約狀態的類型也是 null */
+  booking: BookingStatus | null
   /** 第幾天（1 起算）；null 是口袋名單 */
   day: number | null
   /** HH:MM 或 HH:MM:SS；null 表示沒排時間 */
@@ -58,6 +67,8 @@ export interface Expense {
   spent_on: string | null
   spot_id: Id | null
   note: string
+  /** 外幣旅費的實際扣款（新台幣），有填時這筆用它換算而不用旅程匯率 */
+  twd_amount: number | null
   version: number
   created_at: string
 }
@@ -93,7 +104,10 @@ export interface TripData {
 export type TripInput = Pick<Trip, 'name' | 'start_date' | 'end_date' | 'currency' | 'fx_rate'>
 export type TripPatch = Partial<TripInput>
 
-export type SpotInput = Pick<Spot, 'day' | 'start_time' | 'title' | 'address' | 'map_url' | 'note' | 'est_cost' | 'sort_key'>
+export type SpotInput = Pick<
+  Spot,
+  'category' | 'booking' | 'day' | 'start_time' | 'title' | 'address' | 'map_url' | 'note' | 'est_cost' | 'sort_key'
+>
 export type SpotPatch = Partial<SpotInput>
 
 export interface ExpenseInput {
@@ -108,6 +122,7 @@ export interface ExpenseInput {
   spent_on: string | null
   spot_id: Id | null
   note: string
+  twd_amount: number | null
 }
 
 export type ShareInput = Omit<ExpenseShare, 'expense_id'>
