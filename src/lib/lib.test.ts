@@ -4,7 +4,7 @@ import { evenKeys, keyBetween } from './order'
 import { currencyDigits, formatMoney, parseAmount, parseSum, toTwd } from './money'
 import { addDays, dayDate, formatRange, tripDayCount } from './format'
 import { bookingForCategory, bookingLabel, defaultBooking, nextBooking } from './category'
-import { flightStatusUrl, flightSummary, hasFlight, normalizeFlightNo } from './flight'
+import { flightSummary, hasFlight, normalizeFlightNo } from './flight'
 
 describe('maps', () => {
   it('只接受 http(s) 連結', () => {
@@ -111,11 +111,8 @@ describe('category', () => {
 describe('flight', () => {
   const base = { category: 'transport' as const, airline: '', flight_no: '', dep_airport: '', arr_airport: '', start_time: null, arr_time: null, arr_day_offset: 0 }
 
-  it('整理航班號碼、組航班動態連結', () => {
+  it('整理航班號碼', () => {
     expect(normalizeFlightNo(' jl-802 ')).toBe('JL802')
-    expect(flightStatusUrl('jl 802')).toBe('https://www.flightaware.com/live/flight/JL802')
-    expect(flightStatusUrl('')).toBeNull()
-    expect(flightStatusUrl('長榮')).toBeNull()
   })
 
   it('卡片上的航班摘要', () => {

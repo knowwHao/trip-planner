@@ -284,7 +284,7 @@ async function remove() {
               </select>
             </div>
           </div>
-          <p class="text-xs text-ink-400">起飛時間就是上面的「出發時間」；填了航班號碼，卡片上會有「查航班動態」</p>
+          <p class="text-xs text-ink-400">起飛時間就是上面的「出發時間」</p>
         </div>
       </fieldset>
       <div>

@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import { computed } from 'vue'
-import { ChevronRight, GripVertical, MapPin, Navigation, Plane, Plus, ReceiptText } from 'lucide-vue-next'
+import { ChevronRight, GripVertical, MapPin, Navigation, Plus, ReceiptText } from 'lucide-vue-next'
 import SpotItems from './SpotItems.vue'
 import type { Spot, SpotItem } from '@/types'
 import { useTripStore } from '@/stores/trip'
@@ -10,7 +10,7 @@ import { formatTime } from '@/lib/format'
 import { bookingLabel, categoryInfo, itemWords, nextBooking } from '@/lib/category'
 import { formatMoney } from '@/lib/money'
 import { expenseTwd } from '@/lib/split'
-import { flightStatusUrl, flightSummary, hasFlight } from '@/lib/flight'
+import { flightSummary, hasFlight } from '@/lib/flight'
 
 const props = withDefaults(defineProps<{ spot: Spot; draggable?: boolean }>(), { draggable: true })
 const emit = defineEmits<{ edit: []; booking: []; 'item-edit': [item: SpotItem | null]; expenses: [] }>()
@@ -30,7 +30,6 @@ const flight = computed(() => {
   const line = flightSummary(props.spot)
   return props.spot.airline && props.spot.flight_no ? `${props.spot.airline} ${line}` : line
 })
-const flightUrl = computed(() => (props.spot.category === 'transport' ? flightStatusUrl(props.spot.flight_no) : null))
 const spent = computed(() => (store.trip ? expenses.value.reduce((s, e) => s + expenseTwd(e, store.trip!), 0) : 0))
 
 function addFirst() {
@@ -100,7 +99,7 @@ const status = computed(() => {
         </a>
       </div>
     </div>
-    <div v-if="showItems || expenses.length || flightUrl" class="ml-8 flex flex-wrap items-center gap-x-1">
+    <div v-if="showItems || expenses.length" class="ml-8 flex flex-wrap items-center gap-x-1">
       <template v-if="showItems">
         <button
           v-if="items.length"
@@ -130,16 +129,6 @@ const status = computed(() => {
       >
         <ReceiptText class="size-3.5" />{{ formatMoney(spent) }}・{{ expenses.length }} 筆
       </button>
-      <a
-        v-if="flightUrl"
-        :href="flightUrl"
-        target="_blank"
-        rel="noopener noreferrer"
-        class="flex items-center gap-1 rounded-lg px-1.5 py-1 text-xs font-semibold text-sea-700 hover:bg-sea-100 dark:text-sea-300 dark:hover:bg-sea-400/10"
-        :aria-label="`在 FlightAware 查 ${spot.flight_no} 的航班動態`"
-      >
-        <Plane class="size-3.5" />查航班動態
-      </a>
     </div>
     <SpotItems v-if="showItems && open && items.length" class="ml-1" :spot="spot" :items="items" @edit="emit('item-edit', $event)" />
   </div>

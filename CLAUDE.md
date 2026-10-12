@@ -46,7 +46,7 @@ npm run build        # vue-tsc 型別檢查 + vite build 到 dist/
 - `src/lib/split.ts`：分攤（平分／指定金額）、淨額、最少轉帳、每人摘要的**唯一來源**（純函式），測試 `split.test.ts`
 - `src/lib/category.ts`：行程類型與預約狀態的文字、預設值、卡片上點標籤的切換，要與 schema 的 `spots.category` check 和 `spots_booking_fits_category` 一致
 - `src/lib/money.ts`：幣別清單、小數位數、換算、金額格式與解析（`parseSum` 可輸入加法）；`format.ts`：日期與旅程天數；`maps.ts`：Google 地圖連結（只用連結或地址，都沒有就不給）；
-  `flight.ts`：航班號碼整理、航班摘要、FlightAware 連結（`flight_no` 格式要與 schema 的 check 一致）；`order.ts`：排序值（取中間值）
+  `flight.ts`：航班號碼整理、航班摘要（`flight_no` 格式要與 schema 的 check 一致）；`order.ts`：排序值（取中間值）
 - `src/data/repository.ts`：資料層介面與 `NoAccessError`／`AccountSessionError`／`ConflictError`／`InUseError`／`LastMemberError`；實作 `supabaseRepo.ts`（Supabase + Realtime 廣播）、
   `demoRepo.ts`（localStorage，以 `me()`／`guard()` 模擬登入與成員 RLS、版本號與刪除限制，BroadcastChannel 模擬即時同步，測試 `demoRepo.test.ts`）
 - `src/data/writeCheck.ts`：RLS 擋下或版本不符時 update／delete 只會 0 列不報錯，`supabaseRepo.ts` 一律 `.select(…)` 後經 `expectAffected` 判定

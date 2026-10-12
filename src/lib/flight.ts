@@ -23,9 +23,3 @@ export function flightSummary(s: FlightFields): string {
   const route = dep || arr ? `${dep || '?'} → ${arr || '?'}` : ''
   return [s.flight_no || s.airline, route].filter(Boolean).join(' ')
 }
-
-/** FlightAware 的航班頁，IATA 航班號碼（JL802）會自動轉到對應的航班；不需要 API key */
-export function flightStatusUrl(flightNo: string): string | null {
-  const no = normalizeFlightNo(flightNo)
-  return /^[A-Z0-9]{2,3}\d{1,5}[A-Z]?$/.test(no) ? `https://www.flightaware.com/live/flight/${no}` : null
-}
