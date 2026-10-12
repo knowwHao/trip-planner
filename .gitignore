@@ -1,0 +1,15 @@
+node_modules
+dist
+dist-ssr
+*.local
+.DS_Store
+.vscode/*
+!.vscode/extensions.json
+.idea
+*.log
+coverage
+.env*
+!.env.example
+
+# Claude Code 個人設定不進版控，launch.json 要進
+.claude/settings.local.json
