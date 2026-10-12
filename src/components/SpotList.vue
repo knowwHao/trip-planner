@@ -2,15 +2,16 @@
 import { onBeforeUnmount, onMounted, ref, watch } from 'vue'
 import Sortable from 'sortablejs'
 import SpotCard from './SpotCard.vue'
-import type { Id, Spot } from '@/types'
+import type { Id, Spot, SpotItem } from '@/types'
 
 const props = withDefaults(
-  defineProps<{ spots: Spot[]; day: number | null; currency: string; fxRate: number; draggable?: boolean }>(),
+  defineProps<{ spots: Spot[]; day: number | null; draggable?: boolean }>(),
   { draggable: true },
 )
 const emit = defineEmits<{
   edit: [spot: Spot]
   booking: [spot: Spot]
+  'item-edit': [spot: Spot, item: SpotItem | null]
   /** 拖到 day 這一天的第 index 個位置（以拖曳前的清單、扣掉被拖的那筆來算） */
   move: [id: Id, day: number | null, index: number]
 }>()
@@ -54,14 +55,20 @@ onBeforeUnmount(() => sortable?.destroy())
   <div class="relative">
     <div ref="el" :data-day="day ?? ''" class="min-h-14 space-y-2">
       <div v-for="s in props.spots" :key="s.id" :data-id="s.id">
-        <SpotCard :spot="s" :currency="currency" :fx-rate="fxRate" :draggable="draggable" @edit="emit('edit', s)" @booking="emit('booking', s)" />
+        <SpotCard
+          :spot="s"
+          :draggable="draggable"
+          @edit="emit('edit', s)"
+          @booking="emit('booking', s)"
+          @item-edit="emit('item-edit', s, $event)"
+        />
       </div>
     </div>
     <p
       v-if="!props.spots.length"
       class="pointer-events-none absolute inset-0 flex items-center justify-center rounded-3xl border-2 border-dashed border-ink-200 text-sm text-ink-400 dark:border-ink-700"
     >
-      {{ day === null ? '想去但還沒排的地方先放這裡' : '還沒有景點，可以從別天拖過來' }}
+      {{ day === null ? '想去但還沒排的地方先放這裡' : '還沒有行程，可以從別天拖過來' }}
     </p>
   </div>
 </template>

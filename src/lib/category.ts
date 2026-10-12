@@ -54,3 +54,10 @@ export function nextBooking(c: SpotCategory, b: BookingStatus | null): BookingSt
   if (!categoryInfo(c).booking) return null
   return b === 'todo' ? 'done' : 'todo'
 }
+
+/** 子項目在各類型的叫法與打勾的意思，例如購物是「店家」「已逛」 */
+export function itemWords(c: SpotCategory): { noun: string; done: string } {
+  if (c === 'shop') return { noun: '店家', done: '已逛' }
+  if (c === 'food') return { noun: '餐廳', done: '已吃' }
+  return { noun: '地點', done: '已去' }
+}

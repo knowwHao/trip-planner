@@ -1,12 +1,18 @@
 import type {
+  AccountSession,
+  AccountTrip,
   Expense,
   ExpenseInput,
   ExpenseShare,
   Id,
   Participant,
+  PinResult,
   ShareInput,
   Spot,
   SpotInput,
+  SpotItem,
+  SpotItemInput,
+  SpotItemPatch,
   SpotPatch,
   Transfer,
   TransferInput,
@@ -16,7 +22,17 @@ import type {
   TripPatch,
 } from '@/types'
 import { toMinor } from '@/lib/money'
-import { ConflictError, InUseError, InvalidTokenError, type SpotMove, type TripRepository } from './repository'
+import {
+  AccountSessionError,
+  ConflictError,
+  InUseError,
+  InvalidTokenError,
+  NameTakenError,
+  type ItemMove,
+  type SpotMove,
+  type TripRepository,
+} from './repository'
+import { isValidPin, PIN_LOCK_MINUTES, PIN_MAX_ATTEMPTS } from '@/lib/pin'
 import { RowMissingError } from './writeCheck'
 import { channelName } from './realtime'
 import { randomId, randomToken, seedDemoTrip } from './demoSeed'
@@ -26,17 +42,30 @@ const DB_KEY = 'trip-demo-db-v1'
 type StoredTrip = Trip & { token: string }
 type StoredShare = ExpenseShare & { trip_id: Id }
 
+/** Demo 只存在這個瀏覽器，密碼直接存明碼；真正的資料庫存的是加鹽雜湊 */
+interface DemoAccount {
+  id: Id
+  name: string
+  pin: string
+  key: string
+  failed: number
+  locked_until: string | null
+}
+
 export interface DemoDb {
   trips: StoredTrip[]
   participants: Participant[]
   spots: Spot[]
+  items: SpotItem[]
   expenses: Expense[]
   shares: StoredShare[]
   transfers: Transfer[]
+  accounts: DemoAccount[]
+  account_trips: { account_id: Id; trip_id: Id; token: string; added_at: string }[]
 }
 
 export function emptyDb(): DemoDb {
-  return { trips: [], participants: [], spots: [], expenses: [], shares: [], transfers: [] }
+  return { trips: [], participants: [], spots: [], items: [], expenses: [], shares: [], transfers: [], accounts: [], account_trips: [] }
 }
 
 const now = () => new Date().toISOString()
@@ -54,6 +83,10 @@ function readStorage(): DemoDb | null {
       s.booking ??= null
     }
     for (const e of db.expenses) e.twd_amount ??= null
+    // 加入子項目與帳號前存下的示範資料
+    db.items ??= []
+    db.accounts ??= []
+    db.account_trips ??= []
     return db
   } catch {
     return null
@@ -103,6 +136,7 @@ export class DemoRepo implements TripRepository {
     this.db.trips.push(trip)
     this.db.participants.push(...data.participants)
     this.db.spots.push(...data.spots)
+    this.db.items.push(...data.items)
     this.db.expenses.push(...data.expenses)
     this.db.shares.push(...data.shares)
     this.db.transfers.push(...data.transfers)
@@ -134,6 +168,7 @@ export class DemoRepo implements TripRepository {
       trip,
       participants: this.ofTrip(this.db.participants, id).sort((a, b) => a.sort_order - b.sort_order),
       spots: this.ofTrip(this.db.spots, id).sort((a, b) => a.sort_key - b.sort_key),
+      items: this.ofTrip(this.db.items, id).sort((a, b) => a.sort_key - b.sort_key),
       expenses: this.ofTrip(this.db.expenses, id),
       shares: this.ofTrip(this.db.shares, id).map(({ trip_id: _t, ...s }) => s),
       transfers: this.ofTrip(this.db.transfers, id),
@@ -164,6 +199,8 @@ export class DemoRepo implements TripRepository {
     const keep = <T extends { trip_id: Id }>(list: T[]) => list.filter((r) => r.trip_id !== id)
     this.db.participants = keep(this.db.participants)
     this.db.spots = keep(this.db.spots)
+    this.db.items = keep(this.db.items)
+    this.db.account_trips = this.db.account_trips.filter((a) => a.trip_id !== id)
     this.db.expenses = keep(this.db.expenses)
     this.db.shares = keep(this.db.shares)
     this.db.transfers = keep(this.db.transfers)
@@ -242,7 +279,56 @@ export class DemoRepo implements TripRepository {
   async deleteSpot(id: Id) {
     const trip = this.guard()
     this.db.spots = this.db.spots.filter((s) => !(s.id === id && s.trip_id === trip.id))
+    this.db.items = this.db.items.filter((i) => i.spot_id !== id)
     for (const e of this.db.expenses) if (e.spot_id === id) e.spot_id = null
+    this.commit()
+  }
+
+  async createItem(input: SpotItemInput) {
+    const trip = this.guard()
+    if (!this.db.spots.some((s) => s.id === input.spot_id && s.trip_id === trip.id)) throw new RowMissingError()
+    const t = now()
+    const item: SpotItem = { ...input, id: randomId(), trip_id: trip.id, done: false, version: 1, created_at: t, updated_at: t }
+    this.db.items.push(item)
+    this.commit()
+    return clone(item)
+  }
+
+  private findItem(id: Id) {
+    const trip = this.guard()
+    return this.db.items.find((i) => i.id === id && i.trip_id === trip.id)
+  }
+
+  async updateItem(id: Id, version: number, patch: SpotItemPatch) {
+    const item = this.findItem(id)
+    if (!item) throw new RowMissingError()
+    if (item.version !== version) throw new ConflictError()
+    const changed = Object.entries(patch).some(([k, v]) => item[k as keyof SpotItem] !== v)
+    Object.assign(item, patch, { updated_at: now() })
+    if (changed) item.version++
+    this.commit()
+  }
+
+  async setItemDone(id: Id, done: boolean) {
+    const item = this.findItem(id)
+    if (!item) throw new RowMissingError()
+    item.done = done
+    this.commit()
+  }
+
+  async moveItems(moves: ItemMove[]) {
+    // 與 moveSpots 一樣只能 guard 一次，否則重讀 localStorage 會丟掉前面的搬動
+    const trip = this.guard()
+    for (const m of moves) {
+      const item = this.db.items.find((i) => i.id === m.id && i.trip_id === trip.id)
+      if (item) item.sort_key = m.sort_key
+    }
+    this.commit()
+  }
+
+  async deleteItem(id: Id) {
+    const trip = this.guard()
+    this.db.items = this.db.items.filter((i) => !(i.id === id && i.trip_id === trip.id))
     this.commit()
   }
 
@@ -299,6 +385,88 @@ export class DemoRepo implements TripRepository {
   async deleteTransfer(id: Id) {
     const trip = this.guard()
     this.db.transfers = this.db.transfers.filter((t) => !(t.id === id && t.trip_id === trip.id))
+    this.commit()
+  }
+
+  private attemptPin(acc: DemoAccount | undefined, pin: string): PinResult {
+    if (!acc) return { ok: false }
+    if (acc.locked_until && acc.locked_until > now()) return { ok: false, lockedUntil: acc.locked_until }
+    if (acc.pin === pin) {
+      acc.failed = 0
+      acc.locked_until = null
+      this.commit()
+      return { ok: true, session: { id: acc.id, name: acc.name, key: acc.key } }
+    }
+    acc.failed++
+    if (acc.failed >= PIN_MAX_ATTEMPTS) {
+      acc.failed = 0
+      acc.locked_until = new Date(Date.now() + PIN_LOCK_MINUTES * 60_000).toISOString()
+      this.commit()
+      return { ok: false, lockedUntil: acc.locked_until }
+    }
+    this.commit()
+    return { ok: false, remaining: PIN_MAX_ATTEMPTS - acc.failed }
+  }
+
+  /** 模擬 require_account()：憑證不符就當作登入失效 */
+  private requireAccount(session: AccountSession): DemoAccount {
+    this.sync()
+    const acc = this.db.accounts.find((a) => a.id === session.id && a.key === session.key)
+    if (!acc) throw new AccountSessionError()
+    return acc
+  }
+
+  async registerAccount(name: string, pin: string) {
+    this.sync()
+    const trimmed = name.trim()
+    if (!isValidPin(pin) || [...trimmed].length < 2 || [...trimmed].length > 20) throw new Error('資料格式不符，請檢查後再試')
+    if (this.db.accounts.some((a) => a.name.toLowerCase() === trimmed.toLowerCase())) throw new NameTakenError()
+    const acc: DemoAccount = { id: randomId(), name: trimmed, pin, key: randomToken(), failed: 0, locked_until: null }
+    this.db.accounts.push(acc)
+    this.commit()
+    return { id: acc.id, name: acc.name, key: acc.key }
+  }
+
+  async loginAccount(name: string, pin: string) {
+    this.sync()
+    return this.attemptPin(this.db.accounts.find((a) => a.name.toLowerCase() === name.trim().toLowerCase()), pin)
+  }
+
+  async changeAccountPin(session: AccountSession, oldPin: string, newPin: string): Promise<PinResult> {
+    const acc = this.requireAccount(session)
+    if (!isValidPin(newPin)) throw new Error('資料格式不符，請檢查後再試')
+    const res = this.attemptPin(acc, oldPin)
+    if (!res.ok) return res
+    acc.pin = newPin
+    acc.key = randomToken()
+    this.commit()
+    return { ok: true, session: { id: acc.id, name: acc.name, key: acc.key } }
+  }
+
+  async listAccountTrips(session: AccountSession): Promise<AccountTrip[]> {
+    const acc = this.requireAccount(session)
+    return this.db.account_trips
+      .filter((a) => a.account_id === acc.id)
+      .sort((a, b) => b.added_at.localeCompare(a.added_at))
+      .flatMap((a) => {
+        const t = this.db.trips.find((x) => x.id === a.trip_id)
+        return t ? [{ trip_id: t.id, token: t.token === a.token ? t.token : null, name: t.name, start_date: t.start_date, end_date: t.end_date }] : []
+      })
+  }
+
+  async saveAccountTrip(session: AccountSession, token: string) {
+    const acc = this.requireAccount(session)
+    const trip = this.db.trips.find((t) => t.token === token)
+    if (!trip) throw new InvalidTokenError()
+    const row = this.db.account_trips.find((a) => a.account_id === acc.id && a.trip_id === trip.id)
+    if (row) row.token = token
+    else this.db.account_trips.push({ account_id: acc.id, trip_id: trip.id, token, added_at: now() })
+    this.commit()
+  }
+
+  async removeAccountTrip(session: AccountSession, tripId: Id) {
+    const acc = this.requireAccount(session)
+    this.db.account_trips = this.db.account_trips.filter((a) => !(a.account_id === acc.id && a.trip_id === tripId))
     this.commit()
   }
 

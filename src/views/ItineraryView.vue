@@ -3,16 +3,17 @@ import { computed, ref } from 'vue'
 import { AlarmClock, ArrowDownWideNarrow, Bookmark, Plus } from 'lucide-vue-next'
 import SpotList from '@/components/SpotList.vue'
 import SpotFormModal from '@/components/SpotFormModal.vue'
-import type { Id, Spot, SpotCategory } from '@/types'
+import ItemFormModal from '@/components/ItemFormModal.vue'
+import type { Id, Spot, SpotCategory, SpotItem } from '@/types'
 import { repo } from '@/data'
 import { useTripStore } from '@/stores/trip'
 import { ConflictError, type SpotMove } from '@/data/repository'
 import { RowMissingError } from '@/data/writeCheck'
 import { CATEGORIES, categoryInfo, nextBooking } from '@/lib/category'
 import { dayDate, formatDate, todayYmd } from '@/lib/format'
-import { formatMoney, toTwd } from '@/lib/money'
 import { evenKeys, keyBetween } from '@/lib/order'
 import { errorMessage, toast } from '@/composables/useToast'
+import { useExpanded } from '@/composables/useExpanded'
 
 const store = useTripStore()
 const trip = computed(() => store.trip!)
@@ -60,16 +61,6 @@ async function toggleBooking(s: Spot) {
   }
 }
 
-function estTotal(spots: Spot[]) {
-  return spots.reduce((s, x) => s + (x.est_cost ?? 0), 0)
-}
-
-function costLabel(total: number) {
-  const { currency, fx_rate } = trip.value
-  return currency === 'TWD' ? formatMoney(total) : `${formatMoney(total, currency)}（≈ ${formatMoney(toTwd(total, currency, fx_rate))}）`
-}
-
-const scheduledTotal = computed(() => estTotal((store.data?.spots ?? []).filter((s) => s.day !== null && s.day <= store.dayCount)))
 const spotCount = computed(() => store.data?.spots.length ?? 0)
 
 const editing = ref<Spot | null>(null)
@@ -85,6 +76,24 @@ function add(day: number | null) {
 function edit(s: Spot) {
   editing.value = s
   modalOpen.value = true
+}
+
+const itemSpot = ref<Spot | null>(null)
+const editingItem = ref<SpotItem | null>(null)
+const itemOpen = ref(false)
+const expanded = useExpanded()
+
+function editItem(s: Spot, item: SpotItem | null) {
+  itemSpot.value = s
+  editingItem.value = item
+  itemOpen.value = true
+}
+
+/** 從行程的編輯框按「新增店家」：關掉編輯框、展開子清單、開新增框 */
+function addItemFromForm(s: Spot) {
+  modalOpen.value = false
+  expanded.open(s.id)
+  editItem(s, null)
 }
 
 async function move(id: Id, day: number | null, index: number) {
@@ -138,7 +147,7 @@ function jump(day: number | null) {
       <div class="min-w-0">
         <h1 class="text-2xl font-black tracking-tight">行程</h1>
         <p class="mt-1 text-sm text-ink-400 dark:text-ink-300">
-          {{ store.dayCount }} 天・{{ spotCount }} 個行程<template v-if="scheduledTotal">・預估 {{ costLabel(scheduledTotal) }}</template>
+          {{ store.dayCount }} 天・{{ spotCount }} 個行程
         </p>
       </div>
       <button type="button" class="btn-primary" @click="add(1)"><Plus class="size-4" />新增行程</button>
@@ -229,16 +238,15 @@ function jump(day: number | null) {
       <SpotList
         :spots="s.spots"
         :day="s.day"
-        :currency="trip.currency"
-        :fx-rate="trip.fx_rate"
         :draggable="filter === 'all'"
         @edit="edit"
         @move="move"
         @booking="toggleBooking"
+        @item-edit="editItem"
       />
-      <p v-if="estTotal(s.spots)" class="num mt-2 text-right text-xs text-ink-400">預估 {{ costLabel(estTotal(s.spots)) }}</p>
     </section>
 
-    <SpotFormModal :open="modalOpen" :spot="editing" :day="addingDay" @close="modalOpen = false" />
+    <SpotFormModal :open="modalOpen" :spot="editing" :day="addingDay" @close="modalOpen = false" @add-item="addItemFromForm" />
+    <ItemFormModal :open="itemOpen" :spot="itemSpot" :item="editingItem" @close="itemOpen = false" />
   </div>
 </template>

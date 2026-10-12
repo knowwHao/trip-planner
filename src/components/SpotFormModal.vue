@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import { computed, reactive, ref, watch } from 'vue'
-import { Navigation, Trash2 } from 'lucide-vue-next'
+import { ListPlus, Navigation, Trash2 } from 'lucide-vue-next'
 import ModalSheet from './ModalSheet.vue'
 import StaleNotice from './StaleNotice.vue'
 import type { BookingStatus, Spot, SpotCategory, SpotInput } from '@/types'
@@ -11,9 +11,8 @@ import { confirmDialog } from '@/composables/useConfirm'
 import { errorMessage, toast } from '@/composables/useToast'
 import { dayDate, formatDate, formatTime } from '@/lib/format'
 import { googleMapsUrl, safeUrl } from '@/lib/maps'
-import { formatMoney, MAX_AMOUNT, parseAmount, toTwd } from '@/lib/money'
 import { keyAfter } from '@/lib/order'
-import { bookingForCategory, bookingOptions, CATEGORIES, defaultBooking } from '@/lib/category'
+import { bookingForCategory, bookingOptions, CATEGORIES, defaultBooking, itemWords } from '@/lib/category'
 
 const props = defineProps<{
   open: boolean
@@ -22,7 +21,7 @@ const props = defineProps<{
   /** 新增時預設排在哪一天；null 是口袋名單 */
   day?: number | null
 }>()
-const emit = defineEmits<{ close: [] }>()
+const emit = defineEmits<{ close: []; 'add-item': [spot: Spot] }>()
 
 const store = useTripStore()
 const trip = computed(() => store.trip!)
@@ -35,7 +34,6 @@ const form = reactive({
   time: '',
   address: '',
   mapUrl: '',
-  cost: '',
   note: '',
 })
 const base = ref<Spot | null>(null)
@@ -53,7 +51,6 @@ function fill(s: Spot | null | undefined) {
     time: formatTime(s?.start_time ?? null),
     address: s?.address ?? '',
     mapUrl: s?.map_url ?? '',
-    cost: s?.est_cost === null || s?.est_cost === undefined ? '' : String(s.est_cost),
     note: s?.note ?? '',
   })
   touched.value = false
@@ -73,8 +70,8 @@ const dayOptions = computed(() =>
   Array.from({ length: store.dayCount }, (_, i) => ({ value: String(i + 1), label: `第 ${i + 1} 天・${formatDate(dayDate(trip.value, i + 1))}` })),
 )
 
-const cost = computed(() => parseAmount(form.cost, trip.value.currency))
 const statusOptions = computed(() => bookingOptions(form.category))
+const itemCount = computed(() => (base.value ? (store.itemsBySpot.get(base.value.id)?.length ?? 0) : 0))
 
 const PLACEHOLDERS: Record<SpotCategory, string> = {
   sight: '例如：淺草寺',
@@ -99,7 +96,6 @@ const errors = computed(() => {
   if (!form.title.trim()) e.title = '請輸入名稱'
   else if ([...form.title.trim()].length > 80) e.title = '最多 80 個字'
   if (form.mapUrl.trim() && !safeUrl(form.mapUrl)) e.mapUrl = '請貼上 http 或 https 開頭的連結'
-  if (cost.value !== null && !(cost.value >= 0 && cost.value <= MAX_AMOUNT)) e.cost = '金額格式不對'
   if (form.address.length > 200) e.address = '最多 200 個字'
   if (form.note.length > 2000) e.note = '最多 2000 個字'
   return e
@@ -122,12 +118,11 @@ async function submit() {
     address: form.address.trim(),
     map_url: form.mapUrl.trim() ? safeUrl(form.mapUrl)! : '',
     note: form.note.trim(),
-    est_cost: cost.value,
   }
   saving.value = true
   try {
     if (!base.value) {
-      const input: SpotInput = { ...content, day, sort_key: keyAfter(lastKey(day)) }
+      const input: SpotInput = { ...content, est_cost: null, day, sort_key: keyAfter(lastKey(day)) }
       await store.mutate(() => repo.createSpot(input))
       emit('close')
       return
@@ -238,18 +233,15 @@ async function remove() {
         </p>
       </div>
       <div>
-        <label class="label" for="spot-cost">預估花費（{{ trip.currency }}，選填）</label>
-        <input id="spot-cost" v-model="form.cost" class="input num" inputmode="decimal" autocomplete="off" />
-        <p v-if="touched && errors.cost" class="mt-1 text-xs text-rose-500">{{ errors.cost }}</p>
-        <p v-else-if="cost && trip.currency !== 'TWD'" class="mt-1 text-xs text-ink-400">
-          ≈ {{ formatMoney(toTwd(cost, trip.currency, trip.fx_rate)) }}
-        </p>
-      </div>
-      <div>
         <label class="label" for="spot-note">備註（選填）</label>
         <textarea id="spot-note" v-model="form.note" class="input min-h-24" maxlength="2000" placeholder="營業時間、訂位代號、交通方式…" />
       </div>
-      <button v-if="base" type="button" class="btn-ghost -ml-2 text-rose-500" @click="remove"><Trash2 class="size-4" />刪除</button>
+      <div v-if="base && !gone" class="flex flex-wrap items-center justify-between gap-2">
+        <button type="button" class="btn-ghost -ml-2 text-rose-500" @click="remove"><Trash2 class="size-4" />刪除</button>
+        <button type="button" class="btn-ghost -mr-2" @click="emit('add-item', base)">
+          <ListPlus class="size-4" />新增{{ itemWords(form.category).noun }}（{{ itemCount }}）
+        </button>
+      </div>
     </form>
     <template #footer>
       <button type="button" class="btn-outline flex-1" @click="emit('close')">取消</button>

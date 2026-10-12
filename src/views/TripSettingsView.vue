@@ -10,6 +10,7 @@ import { repo } from '@/data'
 import { InUseError } from '@/data/repository'
 import { useTripStore } from '@/stores/trip'
 import { useSavedTrips } from '@/stores/saved'
+import { useAccountStore } from '@/stores/account'
 import { saveWithConflict } from '@/composables/useConflict'
 import { confirmDialog } from '@/composables/useConfirm'
 import { errorMessage, toast } from '@/composables/useToast'
@@ -19,6 +20,7 @@ import { currencyInfo, formatRate } from '@/lib/money'
 const router = useRouter()
 const store = useTripStore()
 const saved = useSavedTrips()
+const account = useAccountStore()
 const trip = computed(() => store.trip!)
 
 // ---------- 旅程資訊 ----------
@@ -164,8 +166,10 @@ async function regenerate() {
 // ---------- 移除與刪除 ----------
 async function forget() {
   const ok = await confirmDialog({
-    title: '從這台裝置移除？',
-    message: '只是這台裝置不再記得這趟旅程，資料還在，之後用旅程連結可以再開。',
+    title: account.session ? '從我的旅程移除？' : '從這台裝置移除？',
+    message: account.session
+      ? '這台裝置和你的帳號都不再記得這趟旅程；資料還在，旅伴也不受影響，之後用旅程連結可以再開。'
+      : '只是這台裝置不再記得這趟旅程，資料還在，之後用旅程連結可以再開。',
     confirmText: '移除',
   })
   if (!ok) return
@@ -270,7 +274,7 @@ async function destroy() {
     <section class="card p-5">
       <h2 class="section-title">移除或刪除</h2>
       <div class="mt-3 flex flex-wrap gap-2">
-        <button type="button" class="btn-outline" @click="forget"><LogOut class="size-4" />從這台裝置移除</button>
+        <button type="button" class="btn-outline" @click="forget"><LogOut class="size-4" />{{ account.session ? '從我的旅程移除' : '從這台裝置移除' }}</button>
         <button type="button" class="btn-danger" @click="destroy"><Trash2 class="size-4" />刪除整趟旅程</button>
       </div>
     </section>

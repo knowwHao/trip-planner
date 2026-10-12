@@ -1,6 +1,6 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 import { DemoRepo, emptyDb } from './demoRepo'
-import { ConflictError, InUseError, InvalidTokenError } from './repository'
+import { AccountSessionError, ConflictError, InUseError, InvalidTokenError, NameTakenError } from './repository'
 import { netBalances } from '@/lib/split'
 
 // DemoRepo 每次操作都會從 localStorage 重讀，測試要有真的 storage 才測得到這個行為
@@ -78,6 +78,38 @@ describe('DemoRepo', () => {
     await expect(repo.updateTrip(data.trip.version, { currency: 'KRW', fx_rate: 0.02 })).rejects.toThrow('換幣別')
     // 3000 日圓 × 0.2：甲付 600，自己 200、乙 400
     expect(Object.fromEntries(netBalances(data))).toEqual({ [a]: 400, [b]: -400 })
+  })
+
+  it('子項目：打勾不加版本、改內容加版本、刪行程連帶刪除', async () => {
+    const { repo } = await setup()
+    const spot = await repo.createSpot({ category: 'shop', booking: null, day: 1, start_time: null, title: '銀座', address: '', map_url: '', note: '', est_cost: null, sort_key: 1 })
+    const item = await repo.createItem({ spot_id: spot.id, title: 'UNIQLO', address: '', map_url: '', note: '', sort_key: 1 })
+    await repo.setItemDone(item.id, true)
+    expect((await repo.loadTrip()).items[0]).toMatchObject({ done: true, version: 1 })
+    await repo.updateItem(item.id, 1, { note: '買襪子' })
+    await expect(repo.updateItem(item.id, 1, { note: '舊的' })).rejects.toBeInstanceOf(ConflictError)
+    await repo.deleteSpot(spot.id)
+    expect((await repo.loadTrip()).items).toEqual([])
+  })
+
+  it('帳號：註冊、登入、存旅程、換發 token 後失效、改密碼讓舊憑證失效', async () => {
+    const { repo, token } = await setup()
+    const s = await repo.registerAccount(' 小明 ', '123456')
+    expect(s.name).toBe('小明')
+    await expect(repo.registerAccount('小明', '654321')).rejects.toBeInstanceOf(NameTakenError)
+    expect(await repo.loginAccount('小明', '000000')).toEqual({ ok: false, remaining: 4 })
+    const login = await repo.loginAccount('小明', '123456')
+    expect(login.ok && login.session.key).toBe(s.key)
+    await repo.saveAccountTrip(s, token)
+    await expect(repo.saveAccountTrip(s, 'x'.repeat(64))).rejects.toBeInstanceOf(InvalidTokenError)
+    expect((await repo.listAccountTrips(s)).map((t) => t.token)).toEqual([token])
+    const next = await repo.regenerateToken()
+    expect((await repo.listAccountTrips(s))[0].token).toBeNull()
+    await repo.saveAccountTrip(s, next)
+    expect((await repo.listAccountTrips(s))[0].token).toBe(next)
+    const changed = await repo.changeAccountPin(s, '123456', '7654321')
+    expect(changed.ok).toBe(true)
+    await expect(repo.listAccountTrips(s)).rejects.toBeInstanceOf(AccountSessionError)
   })
 
   it('重新產生 token 後舊 token 失效', async () => {
