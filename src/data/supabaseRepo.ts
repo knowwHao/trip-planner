@@ -1,7 +1,7 @@
 import { createClient, type RealtimeChannel, type SupabaseClient } from '@supabase/supabase-js'
 import type {
+  AccountInfo,
   AccountSession,
-  AccountTrip,
   Expense,
   ExpenseInput,
   ExpenseShare,
@@ -21,13 +21,15 @@ import type {
   TripData,
   TripInput,
   TripPatch,
+  TripSummary,
 } from '@/types'
 import {
   AccountSessionError,
   ConflictError,
   InUseError,
-  InvalidTokenError,
+  LastMemberError,
   NameTakenError,
+  NoAccessError,
   type ItemMove,
   type SpotMove,
   type TripRepository,
@@ -40,12 +42,13 @@ type PgError = { message: string; code?: string }
 /** 查詢成功時 data 必定有值；沒接 .select() 的寫入 data 是 null，不可取用 */
 function check<T>(res: { data: T | null; error: PgError | null }): T {
   const code = res.error?.code
-  // 42501：RLS 擋下寫入或 RPC 拒絕，代表 token 已失效
-  if (code === '42501') throw new InvalidTokenError()
-  // TP409／TP404／TP422 是 schema.sql 自訂的錯誤碼
+  // 42501：RLS 擋下寫入或 RPC 拒絕，代表已經不是這趟旅程的成員
+  if (code === '42501') throw new NoAccessError()
+  // TP 開頭是 schema.sql 自訂的錯誤碼
   if (code === 'TP409') throw new ConflictError()
   if (code === 'TP404') throw new RowMissingError()
   if (code === 'TP401') throw new AccountSessionError()
+  if (code === 'TP423') throw new LastMemberError()
   if (code === 'TP422') throw new Error('已經有用原本當地幣別記的旅費，要先改掉那些旅費才能換幣別')
   if (code === '23505') throw new Error('已經有同名的旅伴')
   if (code === '23503') throw new Error('有旅伴或景點剛被別人刪除，請重新整理後再試')
@@ -68,9 +71,7 @@ function toPinResult(raw: { ok: boolean; id?: Id; name?: string; key?: string; r
 export class SupabaseRepo implements TripRepository {
   readonly mode = 'supabase' as const
   private sb: SupabaseClient
-  /** 帳號相關的 RPC 不需要旅程 token，用不帶 header 的 client，換旅程時不受影響 */
-  private readonly anon: SupabaseClient
-  private token: string | null = null
+  private session: AccountSession | null = null
   private tripId: Id | null = null
   private channel: RealtimeChannel | null = null
 
@@ -79,77 +80,121 @@ export class SupabaseRepo implements TripRepository {
     private readonly anonKey: string,
   ) {
     this.sb = this.createClient(null)
-    this.anon = this.createClient(null)
   }
 
-  private createClient(token: string | null) {
+  private createClient(session: AccountSession | null) {
     return createClient(this.url, this.anonKey, {
-      // 不使用 Supabase Auth；不保存 session，換 token 重建 client 時才不會搶同一份 storage
+      // 不使用 Supabase Auth；不保存 session，換帳號重建 client 時才不會搶同一份 storage
       auth: { persistSession: false, autoRefreshToken: false, detectSessionInUrl: false },
-      // schema.sql 的 current_trip_id() 從這個 header 比對 token
-      global: { headers: token ? { 'x-trip-token': token } : {} },
+      // schema.sql 的 current_account_id() 從這兩個 header 驗證登入憑證
+      global: { headers: session ? { 'x-account-id': session.id, 'x-account-key': session.key } : {} },
     })
   }
 
-  async createTrip(input: TripInput, participantNames: string[]) {
+  setSession(session: AccountSession | null) {
+    if (session?.id === this.session?.id && session?.key === this.session?.key) return
+    void this.sb.removeAllChannels()
+    this.channel = null
+    this.session = session
+    this.sb = this.createClient(session)
+  }
+
+  async registerAccount(name: string, pin: string): Promise<AccountSession> {
+    const res = await this.sb.rpc('account_register', { p_name: name, p_pin: pin })
+    if (res.error?.code === '23505') throw new NameTakenError()
+    return check(res) as AccountSession
+  }
+
+  async loginAccount(name: string, pin: string) {
+    return toPinResult(check(await this.sb.rpc('account_login', { p_name: name, p_pin: pin })))
+  }
+
+  async nameAvailable(name: string) {
+    return check(await this.sb.rpc('account_name_available', { p_name: name })) as boolean
+  }
+
+  async whoami() {
+    return check(await this.sb.rpc('whoami')) as AccountInfo
+  }
+
+  async changeAccountPin(oldPin: string, newPin: string) {
+    return toPinResult(check(await this.sb.rpc('account_change_pin', { p_old_pin: oldPin, p_new_pin: newPin })))
+  }
+
+  async listAccounts() {
+    return check(await this.sb.rpc('list_accounts')) as AccountInfo[]
+  }
+
+  async listTrips() {
+    // 沒登入或憑證失效時 RLS 只會回 0 筆，先確認登入狀態，免得把失效當成沒有旅程
+    await this.whoami()
+    return check(await this.sb.from('trips').select('id, name, start_date, end_date').order('start_date')) as TripSummary[]
+  }
+
+  async createTrip(input: TripInput, members: Id[], names: string[]) {
     return check(
-      await this.anon.rpc('create_trip', {
+      await this.sb.rpc('create_trip', {
         p_name: input.name,
         p_start: input.start_date,
         p_end: input.end_date,
         p_currency: input.currency,
         p_fx_rate: input.fx_rate,
-        p_participants: participantNames,
+        p_members: members,
+        p_names: names,
       }),
-    ) as { id: Id; token: string }
+    ) as Id
   }
 
-  setToken(token: string | null) {
-    if (token === this.token) return
+  setTrip(tripId: Id | null) {
+    if (tripId === this.tripId) return
     void this.sb.removeAllChannels()
     this.channel = null
-    this.token = token
-    this.tripId = null
-    this.sb = this.createClient(token)
+    this.tripId = tripId
   }
 
   private requireTrip(): Id {
-    if (!this.tripId) throw new InvalidTokenError()
+    if (!this.tripId) throw new NoAccessError()
     return this.tripId
   }
 
-  /** 旅程那一列看得到就代表 token 仍有效 */
-  private async tokenOk() {
-    return check(await this.sb.from('trips').select('id').maybeSingle()) !== null
+  /** 旅程那一列看得到就代表還是成員；看不到時再分辨是登入失效（丟 AccountSessionError）還是被移出 */
+  private async accessOk() {
+    const id = this.requireTrip()
+    if (check(await this.sb.from('trips').select('id').eq('id', id).maybeSingle()) !== null) return true
+    await this.whoami()
+    return false
   }
 
   private rowExists(table: string, id: Id) {
     return async () => check(await this.sb.from(table).select('id').eq('id', id).maybeSingle()) !== null
   }
 
-  /** update／delete 須加 .select(…) 取回受影響的列，token 失效或版本不符時才不會被當成成功 */
+  /** update／delete 須加 .select(…) 取回受影響的列，被移出或版本不符時才不會被當成成功 */
   private async expectAffected(
     res: { data: unknown[] | null; error: PgError | null },
     onMissing: OnMissing,
     rowExists?: () => Promise<boolean>,
   ) {
-    await verifyAffected(check(res).length, onMissing, () => this.tokenOk(), rowExists)
+    await verifyAffected(check(res).length, onMissing, () => this.accessOk(), rowExists)
   }
 
   async loadTrip(): Promise<TripData> {
+    const id = this.requireTrip()
     const [trip, participants, spots, items, expenses, shares, transfers] = await Promise.all([
-      this.sb.from('trips').select('id, name, start_date, end_date, currency, fx_rate, version, created_at, updated_at').maybeSingle(),
-      this.sb.from('participants').select('*').order('sort_order').order('created_at'),
-      this.sb.from('spots').select('*').order('sort_key'),
-      this.sb.from('spot_items').select('*').order('sort_key'),
-      this.sb.from('expenses').select('*'),
-      this.sb.from('expense_shares').select('expense_id, participant_id, amount'),
-      this.sb.from('transfers').select('*'),
+      this.sb.from('trips').select('*').eq('id', id).maybeSingle(),
+      this.sb.from('participants').select('*').eq('trip_id', id).order('sort_order').order('created_at'),
+      this.sb.from('spots').select('*').eq('trip_id', id).order('sort_key'),
+      this.sb.from('spot_items').select('*').eq('trip_id', id).order('sort_key'),
+      this.sb.from('expenses').select('*').eq('trip_id', id),
+      this.sb.from('expense_shares').select('expense_id, participant_id, amount').eq('trip_id', id),
+      this.sb.from('transfers').select('*').eq('trip_id', id),
     ])
-    // token 不符時 RLS 讓每張表都回 0 筆而不是報錯，以旅程那一列是否存在判斷
+    // 不是成員時 RLS 讓每張表都回 0 筆而不是報錯，以旅程那一列是否存在判斷
     const t = check(trip) as Trip | null
-    if (!t) throw new InvalidTokenError()
-    this.tripId = t.id
+    if (!t) {
+      await this.whoami()
+      throw new NoAccessError()
+    }
     return {
       trip: { ...t, fx_rate: Number(t.fx_rate) },
       participants: check(participants) as Participant[],
@@ -170,13 +215,17 @@ export class SupabaseRepo implements TripRepository {
     )
   }
 
-  async regenerateToken() {
-    return check(await this.sb.rpc('regenerate_trip_token')) as string
-  }
-
   async deleteTrip() {
     const id = this.requireTrip()
     await this.expectAffected(await this.sb.from('trips').delete().eq('id', id).select('id'), 'ignore')
+  }
+
+  async addMember(accountId: Id, participantId?: Id) {
+    check(await this.sb.rpc('add_trip_member', { p_trip: this.requireTrip(), p_account: accountId, p_participant: participantId ?? null }))
+  }
+
+  async removeMember(participantId: Id) {
+    check(await this.sb.rpc('remove_trip_member', { p_participant: participantId }))
   }
 
   async addParticipants(rows: { name: string; sort_order: number }[]) {
@@ -257,7 +306,7 @@ export class SupabaseRepo implements TripRepository {
   }
 
   async saveExpense(input: ExpenseInput, shares: ShareInput[]) {
-    return check(await this.sb.rpc('save_expense', { p_expense: input, p_shares: shares })) as Id
+    return check(await this.sb.rpc('save_expense', { p_trip: this.requireTrip(), p_expense: input, p_shares: shares })) as Id
   }
 
   async deleteExpense(id: Id) {
@@ -273,42 +322,12 @@ export class SupabaseRepo implements TripRepository {
     await this.expectAffected(await this.sb.from('transfers').delete().eq('id', id).select('id'), 'ignore')
   }
 
-  async registerAccount(name: string, pin: string): Promise<AccountSession> {
-    const res = await this.anon.rpc('account_register', { p_name: name, p_pin: pin })
-    if (res.error?.code === '23505') throw new NameTakenError()
-    return check(res) as AccountSession
-  }
-
-  async loginAccount(name: string, pin: string) {
-    return toPinResult(check(await this.anon.rpc('account_login', { p_name: name, p_pin: pin })))
-  }
-
-  async changeAccountPin(session: AccountSession, oldPin: string, newPin: string) {
-    return toPinResult(
-      check(
-        await this.anon.rpc('account_change_pin', { p_account: session.id, p_key: session.key, p_old_pin: oldPin, p_new_pin: newPin }),
-      ),
-    )
-  }
-
-  async listAccountTrips(session: AccountSession) {
-    return check(await this.anon.rpc('account_list_trips', { p_account: session.id, p_key: session.key })) as AccountTrip[]
-  }
-
-  async saveAccountTrip(session: AccountSession, token: string) {
-    check(await this.anon.rpc('account_save_trip', { p_account: session.id, p_key: session.key, p_token: token }))
-  }
-
-  async removeAccountTrip(session: AccountSession, tripId: Id) {
-    check(await this.anon.rpc('account_remove_trip', { p_account: session.id, p_key: session.key, p_trip: tripId }))
-  }
-
   subscribe(onChange: () => void, onLive: (live: boolean) => void) {
     const sb = this.sb
     let cancelled = false
     let ch: RealtimeChannel | null = null
     let joined = false
-    void channelName(this.token).then((name) => {
+    void channelName(this.tripId).then((name) => {
       if (cancelled || !name) return
       ch = sb.channel(name, { config: { broadcast: { self: false } } })
       ch.on('broadcast', { event: 'changed' }, () => onChange()).subscribe((status) => {

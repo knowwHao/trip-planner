@@ -9,11 +9,14 @@ export function safeUrl(raw: string): string | null {
   }
 }
 
-/** 有填連結就用連結，否則用地址或名稱組 Google 地圖搜尋網址（官方 Maps URLs 格式，不需要 API key） */
-export function googleMapsUrl(spot: { map_url: string; address: string; title: string }): string | null {
+/**
+ * 有填連結就用連結，否則用地址組 Google 地圖搜尋網址（官方 Maps URLs 格式，不需要 API key）
+ * 兩個都沒填就不給地圖：只用名稱搜尋常常搜到同名的別家店
+ */
+export function googleMapsUrl(spot: { map_url: string; address: string }): string | null {
   const direct = safeUrl(spot.map_url)
   if (direct) return direct
-  const query = spot.address.trim() || spot.title.trim()
+  const query = spot.address.trim()
   if (!query) return null
   return `https://www.google.com/maps/search/?api=1&query=${encodeURIComponent(query)}`
 }

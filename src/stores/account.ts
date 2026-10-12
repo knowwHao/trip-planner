@@ -1,10 +1,9 @@
 import { defineStore } from 'pinia'
-import { ref, watch } from 'vue'
-import type { AccountSession, AccountTrip, Id, PinResult } from '@/types'
+import { ref } from 'vue'
+import type { AccountInfo, AccountSession, PinResult } from '@/types'
 import { repo } from '@/data'
-import { AccountSessionError, InvalidTokenError } from '@/data/repository'
+import { AccountSessionError } from '@/data/repository'
 import { toast } from '@/composables/useToast'
-import { useSavedTrips } from './saved'
 
 const KEY = 'trip-account'
 
@@ -18,82 +17,70 @@ function read(): AccountSession | null {
 }
 
 /**
- * 選用的帳號：登入後「我的旅程」會存進帳號，換裝置登入就找得回來
- * 旅程權限仍然只看旅程 token，帳號只是幫忙保管 token
+ * 登入狀態：要登入才能使用，旅程權限看帳號是不是成員
+ * 憑證存在這台裝置，登出或改密碼（其他裝置的憑證會失效）之前一直有效
  */
 export const useAccountStore = defineStore('account', () => {
-  const session = ref<AccountSession | null>(read())
-  /** 帳號裡連結已被重新產生的旅程，這台裝置也沒有新連結 */
-  const staleTrips = ref<AccountTrip[]>([])
-  const syncing = ref(false)
+  const session = ref<AccountSession | null>(null)
+  /** 所有註冊使用者，加成員時用 */
+  const accounts = ref<AccountInfo[]>([])
 
-  watch(session, (v) => {
+  // repo 要同步換身分，之後馬上發出的請求才會帶到新的憑證
+  function setSession(v: AccountSession | null, persist = true) {
+    session.value = v
+    repo.setSession(v)
+    if (!v) accounts.value = []
+    if (!persist) return
     try {
       if (v) localStorage.setItem(KEY, JSON.stringify(v))
       else localStorage.removeItem(KEY)
     } catch {
       // 無痕模式寫不進去時只在這個分頁有效
     }
+  }
+  setSession(read(), false)
+
+  // 其他分頁登入、登出或改密碼時跟著換
+  window.addEventListener('storage', (e) => {
+    if (e.key === KEY) setSession(read(), false)
   })
 
   function expired() {
-    session.value = null
-    staleTrips.value = []
+    if (!session.value) return
+    setSession(null)
     toast.error('登入已失效（密碼可能在別的裝置改過），請重新登入')
   }
 
-  /** 本機有、帳號沒有（或 token 不同）的先存進帳號，再把帳號裡的旅程補進本機 */
-  async function sync() {
+  /** 開網站時確認這台裝置的憑證還有效；連不上時先照常使用，等之後的請求再判斷 */
+  async function verify() {
     const s = session.value
-    if (!s || syncing.value) return
-    syncing.value = true
-    const saved = useSavedTrips()
+    if (!s) return
     try {
-      let remote = await repo.listAccountTrips(s)
-      const remoteToken = new Map(remote.map((r) => [r.trip_id, r.token]))
-      const toPush = saved.list.filter((t) => remoteToken.get(t.id) !== t.token)
-      if (toPush.length) {
-        // 本機的 token 也可能已失效，存不進去就算了，這台裝置打開時會顯示連結失效
-        await Promise.all(toPush.map((t) => repo.saveAccountTrip(s, t.token).catch((e: unknown) => {
-          if (!(e instanceof InvalidTokenError)) throw e
-        })))
-        remote = await repo.listAccountTrips(s)
-      }
-      for (const r of remote) if (r.token) saved.addFromAccount(r.token, { id: r.trip_id, name: r.name, start_date: r.start_date, end_date: r.end_date })
-      staleTrips.value = remote.filter((r) => !r.token && !saved.find(r.trip_id))
+      const me = await repo.whoami()
+      if (session.value === s && me.name !== s.name) setSession({ ...s, name: me.name })
     } catch (e) {
-      if (e instanceof AccountSessionError) expired()
-      // 其他錯誤多半是暫時離線，下次開啟再同步
-    } finally {
-      syncing.value = false
+      if (e instanceof AccountSessionError && session.value === s) expired()
     }
   }
 
   async function register(name: string, pin: string) {
-    session.value = await repo.registerAccount(name, pin)
-    await sync()
+    setSession(await repo.registerAccount(name, pin))
   }
 
   async function login(name: string, pin: string): Promise<PinResult> {
     const res = await repo.loginAccount(name, pin)
-    if (res.ok) {
-      session.value = res.session
-      await sync()
-    }
+    if (res.ok) setSession(res.session)
     return res
   }
 
-  /** 只是這台裝置登出，「我的旅程」清單留在這台裝置 */
   function logout() {
-    session.value = null
-    staleTrips.value = []
+    setSession(null)
   }
 
   async function changePin(oldPin: string, newPin: string): Promise<PinResult> {
-    if (!session.value) return { ok: false }
     try {
-      const res = await repo.changeAccountPin(session.value, oldPin, newPin)
-      if (res.ok) session.value = res.session
+      const res = await repo.changeAccountPin(oldPin, newPin)
+      if (res.ok) setSession(res.session)
       return res
     } catch (e) {
       if (e instanceof AccountSessionError) expired()
@@ -101,23 +88,14 @@ export const useAccountStore = defineStore('account', () => {
     }
   }
 
-  /** 這台裝置加入或換了旅程 token 時順便存進帳號；失敗不影響使用，下次同步會再補 */
-  function pushTrip(token: string) {
-    const s = session.value
-    if (!s) return
-    repo.saveAccountTrip(s, token).catch((e: unknown) => {
+  async function loadAccounts() {
+    try {
+      accounts.value = await repo.listAccounts()
+    } catch (e) {
       if (e instanceof AccountSessionError) expired()
-    })
+      throw e
+    }
   }
 
-  function removeTrip(tripId: Id) {
-    const s = session.value
-    staleTrips.value = staleTrips.value.filter((t) => t.trip_id !== tripId)
-    if (!s) return
-    repo.removeAccountTrip(s, tripId).catch((e: unknown) => {
-      if (e instanceof AccountSessionError) expired()
-    })
-  }
-
-  return { session, staleTrips, syncing, sync, register, login, logout, changePin, pushTrip, removeTrip }
+  return { session, accounts, expired, verify, register, login, logout, changePin, loadAccounts }
 })

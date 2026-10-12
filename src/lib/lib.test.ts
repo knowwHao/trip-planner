@@ -4,6 +4,7 @@ import { evenKeys, keyBetween } from './order'
 import { currencyDigits, formatMoney, parseAmount, parseSum, toTwd } from './money'
 import { addDays, dayDate, formatRange, tripDayCount } from './format'
 import { bookingForCategory, bookingLabel, defaultBooking, nextBooking } from './category'
+import { flightSummary, hasFlight, normalizeFlightNo } from './flight'
 
 describe('maps', () => {
   it('只接受 http(s) 連結', () => {
@@ -12,14 +13,12 @@ describe('maps', () => {
     expect(safeUrl('maps.google.com')).toBeNull()
   })
 
-  it('沒填連結時用地址、再來用名稱搜尋', () => {
-    expect(googleMapsUrl({ map_url: '', address: '東京都台東区浅草2-3-1', title: '淺草寺' })).toBe(
+  it('沒填連結時用地址搜尋，兩個都沒填就沒有地圖', () => {
+    expect(googleMapsUrl({ map_url: '', address: '東京都台東区浅草2-3-1' })).toBe(
       'https://www.google.com/maps/search/?api=1&query=%E6%9D%B1%E4%BA%AC%E9%83%BD%E5%8F%B0%E6%9D%B1%E5%8C%BA%E6%B5%85%E8%8D%892-3-1',
     )
-    expect(googleMapsUrl({ map_url: 'javascript:x', address: '', title: 'A&B' })).toBe(
-      'https://www.google.com/maps/search/?api=1&query=A%26B',
-    )
-    expect(googleMapsUrl({ map_url: '', address: ' ', title: '' })).toBeNull()
+    expect(googleMapsUrl({ map_url: 'javascript:x', address: 'A&B' })).toBe('https://www.google.com/maps/search/?api=1&query=A%26B')
+    expect(googleMapsUrl({ map_url: '', address: ' ' })).toBeNull()
   })
 })
 
@@ -106,5 +105,23 @@ describe('category', () => {
     expect(nextBooking('food', null)).toBe('todo')
     expect(nextBooking('stay', 'done')).toBe('todo')
     expect(nextBooking('shop', null)).toBeNull()
+  })
+})
+
+describe('flight', () => {
+  const base = { category: 'transport' as const, airline: '', flight_no: '', dep_airport: '', arr_airport: '', start_time: null, arr_time: null, arr_day_offset: 0 }
+
+  it('整理航班號碼', () => {
+    expect(normalizeFlightNo(' jl-802 ')).toBe('JL802')
+  })
+
+  it('卡片上的航班摘要', () => {
+    const f = { ...base, flight_no: 'JL802', dep_airport: 'TPE', arr_airport: 'NRT', start_time: '08:30:00', arr_time: '12:45:00' }
+    expect(flightSummary(f)).toBe('JL802 TPE 08:30 → NRT 12:45')
+    expect(flightSummary({ ...f, start_time: '23:30', arr_time: '03:45', arr_day_offset: 1 })).toBe('JL802 TPE 23:30 → NRT 03:45 +1')
+    expect(flightSummary({ ...base, airline: '星宇', arr_airport: 'KIX' })).toBe('星宇 ? → KIX')
+    expect(hasFlight(base)).toBe(false)
+    expect(hasFlight({ ...f, category: 'sight' })).toBe(false)
+    expect(hasFlight(f)).toBe(true)
   })
 })

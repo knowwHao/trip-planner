@@ -12,8 +12,6 @@ export const router = createRouter({
   scrollBehavior: (_to, _from, saved) => saved ?? { top: 0 },
   routes: [
     { path: '/', component: () => import('@/views/HomeView.vue'), meta: { title: '我的旅程' } },
-    // 旅程連結：JoinView 記下 token 後以 replace 導到旅程頁，網址與瀏覽紀錄都不留 token，避免截圖外流
-    { path: '/t/:token', component: () => import('@/views/JoinView.vue'), meta: { title: '開啟旅程' } },
     {
       path: '/trips/:tripId',
       component: () => import('@/views/TripLayout.vue'),

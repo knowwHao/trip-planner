@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import { computed, reactive, ref, watch } from 'vue'
-import { ListPlus, Navigation, ReceiptText, Trash2 } from 'lucide-vue-next'
+import { ChevronRight, ListPlus, Navigation, ReceiptText, Trash2 } from 'lucide-vue-next'
 import ModalSheet from './ModalSheet.vue'
 import StaleNotice from './StaleNotice.vue'
 import type { BookingStatus, Spot, SpotCategory, SpotInput } from '@/types'
@@ -13,6 +13,7 @@ import { dayDate, formatDate, formatTime } from '@/lib/format'
 import { googleMapsUrl, safeUrl } from '@/lib/maps'
 import { keyAfter } from '@/lib/order'
 import { bookingForCategory, bookingOptions, CATEGORIES, defaultBooking, itemWords } from '@/lib/category'
+import { FLIGHT_NO_RE, normalizeFlightNo } from '@/lib/flight'
 
 const props = defineProps<{
   open: boolean
@@ -35,7 +36,14 @@ const form = reactive({
   address: '',
   mapUrl: '',
   note: '',
+  airline: '',
+  flightNo: '',
+  depAirport: '',
+  arrAirport: '',
+  arrTime: '',
+  arrOffset: 0,
 })
+const flightOpen = ref(false)
 const base = ref<Spot | null>(null)
 const touched = ref(false)
 const saving = ref(false)
@@ -52,7 +60,14 @@ function fill(s: Spot | null | undefined) {
     address: s?.address ?? '',
     mapUrl: s?.map_url ?? '',
     note: s?.note ?? '',
+    airline: s?.airline ?? '',
+    flightNo: s?.flight_no ?? '',
+    depAirport: s?.dep_airport ?? '',
+    arrAirport: s?.arr_airport ?? '',
+    arrTime: formatTime(s?.arr_time ?? null),
+    arrOffset: s?.arr_day_offset ?? 0,
   })
+  flightOpen.value = !!(form.airline || form.flightNo || form.depAirport || form.arrAirport || form.arrTime)
   touched.value = false
 }
 
@@ -87,9 +102,7 @@ function pickCategory(c: SpotCategory) {
   form.category = c
   form.booking = bookingForCategory(c, form.booking)
 }
-const preview = computed(() =>
-  googleMapsUrl({ map_url: form.mapUrl, address: form.address, title: form.title }),
-)
+const preview = computed(() => googleMapsUrl({ map_url: form.mapUrl, address: form.address }))
 
 const errors = computed(() => {
   const e: Record<string, string> = {}
@@ -98,6 +111,7 @@ const errors = computed(() => {
   if (form.mapUrl.trim() && !safeUrl(form.mapUrl)) e.mapUrl = '請貼上 http 或 https 開頭的連結'
   if (form.address.length > 200) e.address = '最多 200 個字'
   if (form.note.length > 2000) e.note = '最多 2000 個字'
+  if (form.category === 'transport' && !FLIGHT_NO_RE.test(normalizeFlightNo(form.flightNo))) e.flightNo = '航班號碼是英文字母加數字，例如 JL802'
   return e
 })
 
@@ -118,6 +132,17 @@ async function submit() {
     address: form.address.trim(),
     map_url: form.mapUrl.trim() ? safeUrl(form.mapUrl)! : '',
     note: form.note.trim(),
+    // 換成別的類型時清掉航班，免得卡片以外的地方還留著看不到的資料
+    ...(form.category === 'transport'
+      ? {
+          airline: form.airline.trim(),
+          flight_no: normalizeFlightNo(form.flightNo),
+          dep_airport: form.depAirport.trim(),
+          arr_airport: form.arrAirport.trim(),
+          arr_time: form.arrTime || null,
+          arr_day_offset: form.arrTime ? form.arrOffset : 0,
+        }
+      : { airline: '', flight_no: '', dep_airport: '', arr_airport: '', arr_time: null, arr_day_offset: 0 }),
   }
   saving.value = true
   try {
@@ -213,10 +238,55 @@ async function remove() {
           </select>
         </div>
         <div class="min-w-0">
-          <label class="label" for="spot-time">時間（選填）</label>
+          <label class="label" for="spot-time">{{ form.category === 'transport' ? '出發時間' : '時間' }}（選填）</label>
           <input id="spot-time" v-model="form.time" type="time" class="input" />
         </div>
       </div>
+      <fieldset v-if="form.category === 'transport'" class="rounded-2xl border border-ink-200 px-3 pb-3 dark:border-ink-700">
+        <legend class="px-1">
+          <button type="button" class="flex items-center gap-1 text-sm font-bold" :aria-expanded="flightOpen" @click="flightOpen = !flightOpen">
+            <ChevronRight class="size-4 transition" :class="flightOpen && 'rotate-90'" />✈️ 航班（選填）
+          </button>
+        </legend>
+        <div v-if="flightOpen" class="mt-1 space-y-3">
+          <div class="grid grid-cols-[minmax(0,1fr)_7rem] gap-3">
+            <div class="min-w-0">
+              <label class="label" for="spot-airline">航空公司</label>
+              <input id="spot-airline" v-model="form.airline" class="input" maxlength="40" placeholder="例如：日本航空" autocomplete="off" />
+            </div>
+            <div class="min-w-0">
+              <label class="label" for="spot-flight-no">航班號碼</label>
+              <input id="spot-flight-no" v-model="form.flightNo" class="input uppercase" maxlength="10" placeholder="JL802" autocomplete="off" autocapitalize="characters" />
+            </div>
+          </div>
+          <p v-if="touched && errors.flightNo" class="-mt-2 text-xs text-rose-500">{{ errors.flightNo }}</p>
+          <div class="grid grid-cols-2 gap-3">
+            <div class="min-w-0">
+              <label class="label" for="spot-dep">出發機場</label>
+              <input id="spot-dep" v-model="form.depAirport" class="input" maxlength="40" placeholder="TPE" autocomplete="off" />
+            </div>
+            <div class="min-w-0">
+              <label class="label" for="spot-arr">抵達機場</label>
+              <input id="spot-arr" v-model="form.arrAirport" class="input" maxlength="40" placeholder="NRT" autocomplete="off" />
+            </div>
+          </div>
+          <div class="grid grid-cols-2 gap-3">
+            <div class="min-w-0">
+              <label class="label" for="spot-arr-time">抵達時間（當地）</label>
+              <input id="spot-arr-time" v-model="form.arrTime" type="time" class="input" />
+            </div>
+            <div class="min-w-0">
+              <label class="label" for="spot-arr-day">抵達日</label>
+              <select id="spot-arr-day" v-model.number="form.arrOffset" class="input" :disabled="!form.arrTime">
+                <option :value="0">同一天</option>
+                <option :value="1">隔天（+1）</option>
+                <option :value="2">兩天後（+2）</option>
+              </select>
+            </div>
+          </div>
+          <p class="text-xs text-ink-400">起飛時間就是上面的「出發時間」</p>
+        </div>
+      </fieldset>
       <div>
         <label class="label" for="spot-address">地址（選填）</label>
         <input id="spot-address" v-model="form.address" class="input" maxlength="200" autocomplete="off" />
@@ -226,7 +296,7 @@ async function remove() {
         <input id="spot-map" v-model="form.mapUrl" class="input" inputmode="url" placeholder="https://maps.app.goo.gl/…" autocomplete="off" />
         <p v-if="touched && errors.mapUrl" class="mt-1 text-xs text-rose-500">{{ errors.mapUrl }}</p>
         <p v-else class="mt-1 text-xs leading-relaxed text-ink-400">
-          在 Google 地圖按「分享」→「複製連結」貼上；沒填就用地址或名稱搜尋。
+          在 Google 地圖按「分享」→「複製連結」貼上；沒填就用地址搜尋，兩個都沒填卡片上就不放地圖。
           <a v-if="preview" :href="preview" target="_blank" rel="noopener noreferrer" class="inline-flex items-center gap-0.5 font-semibold text-sea-700 dark:text-sea-300">
             <Navigation class="size-3" />試開
           </a>

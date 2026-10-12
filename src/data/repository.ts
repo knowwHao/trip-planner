@@ -1,6 +1,6 @@
 import type {
+  AccountInfo,
   AccountSession,
-  AccountTrip,
   ExpenseInput,
   Id,
   ShareInput,
@@ -15,15 +15,16 @@ import type {
   TripData,
   TripInput,
   TripPatch,
+  TripSummary,
 } from '@/types'
 
 export type RepoMode = 'demo' | 'supabase'
 
-/** 旅程 token 不符（沒帶、打錯或已被重新產生） */
-export class InvalidTokenError extends Error {
+/** 看不到這趟旅程：已經不是成員（被移出）或旅程已被刪除 */
+export class NoAccessError extends Error {
   constructor() {
-    super('旅程連結已失效')
-    this.name = 'InvalidTokenError'
+    super('你已經不是這趟旅程的成員，或旅程已被刪除')
+    this.name = 'NoAccessError'
   }
 }
 
@@ -43,7 +44,15 @@ export class InUseError extends Error {
   }
 }
 
-/** 這台裝置的帳號憑證已失效（密碼在別的裝置改過） */
+/** 旅程至少要留一位成員 */
+export class LastMemberError extends Error {
+  constructor() {
+    super('旅程至少要留一位成員；不需要這趟旅程的話，請改用「刪除整趟旅程」')
+    this.name = 'LastMemberError'
+  }
+}
+
+/** 這台裝置的登入憑證已失效（沒登入，或密碼在別的裝置改過） */
 export class AccountSessionError extends Error {
   constructor() {
     super('登入已失效，請重新登入')
@@ -73,20 +82,38 @@ export interface SpotMove {
 export interface TripRepository {
   readonly mode: RepoMode
 
-  /** 任何人都能建立旅程，回傳新旅程的 id 與 token */
-  createTrip(input: TripInput, participantNames: string[]): Promise<{ id: Id; token: string }>
+  /** 之後的請求都以這個帳號的身分；null 表示登出 */
+  setSession(session: AccountSession | null): void
+  /** 名稱重複丟 NameTakenError */
+  registerAccount(name: string, pin: string): Promise<AccountSession>
+  loginAccount(name: string, pin: string): Promise<PinResult>
+  /** 註冊時即時檢查名稱還能不能用 */
+  nameAvailable(name: string): Promise<boolean>
+  /** 以下需要登入，憑證失效時丟 AccountSessionError */
+  whoami(): Promise<AccountInfo>
+  /** 成功時回傳新憑證，舊憑證（包括其他裝置的）一併失效 */
+  changeAccountPin(oldPin: string, newPin: string): Promise<PinResult>
+  /** 所有註冊使用者 */
+  listAccounts(): Promise<AccountInfo[]>
+  /** 自己是成員的旅程 */
+  listTrips(): Promise<TripSummary[]>
+  /** 建立者自動成為成員；members 是一起加入的帳號，names 是只有名字的旅伴；回傳旅程 id */
+  createTrip(input: TripInput, members: Id[], names: string[]): Promise<Id>
 
-  /** 之後的請求都以這個旅程 token 存取；null 表示沒有開啟旅程 */
-  setToken(token: string | null): void
+  /** 之後的旅程操作都針對這趟；null 表示沒有開啟旅程 */
+  setTrip(tripId: Id | null): void
 
-  /** token 不符時丟 InvalidTokenError */
+  /** 看不到這趟時丟 NoAccessError */
   loadTrip(): Promise<TripData>
   /** 版本不符丟 ConflictError；有外幣費用時換幣別會丟錯 */
   updateTrip(version: number, patch: TripPatch): Promise<void>
-  /** 換發 token 並回傳新值，舊連結立即失效 */
-  regenerateToken(): Promise<string>
   deleteTrip(): Promise<void>
 
+  /** 把註冊使用者加成成員；participantId 是要換成這個帳號的旅伴（接手他的旅費紀錄） */
+  addMember(accountId: Id, participantId?: Id): Promise<void>
+  /** 移出成員：留下名字變成只有名字的旅伴；最後一位成員丟 LastMemberError */
+  removeMember(participantId: Id): Promise<void>
+  /** 只有名字的旅伴 */
   addParticipants(rows: { name: string; sort_order: number }[]): Promise<void>
   renameParticipant(id: Id, version: number, name: string): Promise<void>
   /** 有旅費或轉帳紀錄時丟 InUseError */
@@ -113,17 +140,6 @@ export interface TripRepository {
 
   createTransfer(input: TransferInput): Promise<void>
   deleteTransfer(id: Id): Promise<void>
-
-  /** 名稱重複丟 NameTakenError */
-  registerAccount(name: string, pin: string): Promise<AccountSession>
-  loginAccount(name: string, pin: string): Promise<PinResult>
-  /** 成功時回傳新憑證，舊憑證（包括其他裝置的）一併失效 */
-  changeAccountPin(session: AccountSession, oldPin: string, newPin: string): Promise<PinResult>
-  /** 以下憑證失效時丟 AccountSessionError */
-  listAccountTrips(session: AccountSession): Promise<AccountTrip[]>
-  /** token 無效時丟 InvalidTokenError */
-  saveAccountTrip(session: AccountSession, token: string): Promise<void>
-  removeAccountTrip(session: AccountSession, tripId: Id): Promise<void>
 
   /** 收到其他人的異動通知時呼叫 onChange；live 回報即時連線狀態；回傳取消訂閱的函式 */
   subscribe(onChange: () => void, onLive: (live: boolean) => void): () => void

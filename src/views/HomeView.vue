@@ -1,26 +1,39 @@
 <script setup lang="ts">
-import { computed, ref } from 'vue'
+import { computed, onMounted, ref } from 'vue'
 import { RouterLink, useRouter } from 'vue-router'
-import { ChevronRight, CloudUpload, FlaskConical, Link2, Link2Off, Luggage, Plus, UserRound, X } from 'lucide-vue-next'
+import { ChevronRight, FlaskConical, LoaderCircle, Luggage, Plus, RefreshCw, UserRound } from 'lucide-vue-next'
 import BrandMark from '@/components/BrandMark.vue'
 import ThemeToggle from '@/components/ThemeToggle.vue'
 import EmptyState from '@/components/EmptyState.vue'
 import TripFormModal from '@/components/TripFormModal.vue'
 import AccountModal from '@/components/AccountModal.vue'
 import { createDemoTrip, isDemo, repo } from '@/data'
-import { useSavedTrips } from '@/stores/saved'
+import { AccountSessionError } from '@/data/repository'
 import { useAccountStore } from '@/stores/account'
-import type { SavedTrip, TripInput } from '@/types'
+import type { Id, TripInput, TripSummary } from '@/types'
 import { diffDays, formatRange, todayYmd } from '@/lib/format'
 import { errorMessage, toast } from '@/composables/useToast'
 
 const router = useRouter()
-const saved = useSavedTrips()
 const account = useAccountStore()
 const accountOpen = ref(false)
 
+const list = ref<TripSummary[] | null>(null)
+const loadError = ref('')
+
+async function load() {
+  loadError.value = ''
+  try {
+    list.value = await repo.listTrips()
+  } catch (e) {
+    if (e instanceof AccountSessionError) return account.expired()
+    loadError.value = errorMessage(e)
+  }
+}
+onMounted(load)
+
 const trips = computed(() =>
-  [...saved.list].sort((a, b) => {
+  [...(list.value ?? [])].sort((a, b) => {
     // 進行中與還沒出發的排前面（越近越前），已結束的排後面（越近越前）
     const today = todayYmd()
     const ea = a.end_date < today
@@ -30,7 +43,7 @@ const trips = computed(() =>
   }),
 )
 
-function badge(t: SavedTrip): { text: string; cls: string } {
+function badge(t: TripSummary): { text: string; cls: string } {
   const today = todayYmd()
   if (t.end_date < today) return { text: '已結束', cls: 'chip-muted' }
   if (t.start_date <= today) return { text: `旅行中・第 ${diffDays(t.start_date, today) + 1} 天`, cls: 'chip-done' }
@@ -41,37 +54,28 @@ function badge(t: SavedTrip): { text: string; cls: string } {
 const creating = ref(false)
 const saving = ref(false)
 
-async function create(input: TripInput, people: string[]) {
+async function create(input: TripInput, members: Id[], names: string[]) {
   saving.value = true
   try {
-    const { id, token } = await repo.createTrip(input, people)
-    saved.upsert(token, { id, ...input })
+    const id = await repo.createTrip(input, members, names)
     creating.value = false
-    toast.success('旅程建好了，把連結傳給旅伴就能一起編輯')
+    toast.success(members.length ? '旅程建好了，勾選的旅伴登入後就看得到' : '旅程建好了，可以到「設定」把旅伴加進來')
     await router.push(`/trips/${id}`)
   } catch (e) {
+    if (e instanceof AccountSessionError) return account.expired()
     toast.error(errorMessage(e))
   } finally {
     saving.value = false
   }
 }
 
-const link = ref('')
-// 接受完整連結（…#/t/<token>）或只有 token
-function openLink() {
-  const raw = link.value.trim()
-  const token = raw.match(/#\/t\/([A-Za-z0-9_-]+)/)?.[1] ?? (/^[A-Za-z0-9_-]{16,128}$/.test(raw) ? raw : null)
-  if (!token) {
-    toast.error('看不懂這個連結，請貼上完整的旅程連結')
-    return
-  }
-  link.value = ''
-  void router.push(`/t/${token}`)
-}
-
 function openDemo() {
-  const t = createDemoTrip()
-  if (t) void router.push(`/t/${t.token}`)
+  try {
+    const id = createDemoTrip()
+    if (id) void router.push(`/trips/${id}`)
+  } catch (e) {
+    toast.error(errorMessage(e))
+  }
 }
 </script>
 
@@ -86,11 +90,11 @@ function openDemo() {
         <button
           type="button"
           class="flex items-center gap-1.5 rounded-2xl px-3 py-2 text-sm font-semibold transition hover:bg-ink-100 dark:hover:bg-ink-800"
-          :aria-label="account.session ? `帳號：${account.session.name}` : '登入或註冊'"
+          :aria-label="`帳號：${account.session?.name}`"
           @click="accountOpen = true"
         >
           <UserRound class="size-4" />
-          <span class="max-w-28 truncate">{{ account.session?.name ?? '登入' }}</span>
+          <span class="max-w-28 truncate">{{ account.session?.name }}</span>
         </button>
         <ThemeToggle />
       </div>
@@ -110,24 +114,16 @@ function openDemo() {
       </section>
 
       <section class="mt-8">
-        <div class="mb-3 flex items-center justify-between gap-2">
-          <h2 class="section-title">我的旅程</h2>
-          <span v-if="account.session" class="chip-done">已同步到 {{ account.session.name }}</span>
+        <h2 class="section-title mb-3">我的旅程</h2>
+        <div v-if="list === null && !loadError" class="flex items-center justify-center gap-2 py-10 text-sm text-ink-400" role="status">
+          <LoaderCircle class="size-5 animate-spin" />讀取中…
         </div>
-        <button
-          v-if="!account.session"
-          type="button"
-          class="mb-3 flex w-full items-center gap-3 rounded-3xl border border-dashed border-ink-200 px-4 py-3 text-left transition hover:border-sea-400 dark:border-ink-700"
-          @click="accountOpen = true"
-        >
-          <CloudUpload class="size-5 shrink-0 text-sea-600 dark:text-sea-400" />
-          <span class="min-w-0 flex-1 text-sm">
-            <span class="font-semibold">清單只存在這台裝置</span>
-            <span class="block text-xs text-ink-400">登入或註冊帳號，換手機也找得回旅程</span>
-          </span>
-          <ChevronRight class="size-4 shrink-0 text-ink-300" />
-        </button>
-        <div v-if="trips.length" class="space-y-2.5">
+        <div v-else-if="list === null" class="card">
+          <EmptyState :icon="RefreshCw" title="暫時讀不到旅程" :description="`請確認網路後再試一次（${loadError}）`">
+            <button type="button" class="btn-primary" @click="load"><RefreshCw class="size-4" />重新載入</button>
+          </EmptyState>
+        </div>
+        <div v-else-if="trips.length" class="space-y-2.5">
           <RouterLink
             v-for="t in trips"
             :key="t.id"
@@ -146,36 +142,8 @@ function openDemo() {
           </RouterLink>
         </div>
         <div v-else class="card">
-          <EmptyState :icon="Luggage" title="這台裝置還沒有旅程" description="建立一趟新旅程，或用旅伴傳給你的旅程連結開啟" />
+          <EmptyState :icon="Luggage" title="還沒有旅程" description="建立一趟新旅程，或請旅伴在他們的旅程「設定」裡把你加進去" />
         </div>
-
-        <div v-if="account.staleTrips.length" class="mt-4">
-          <p class="mb-2 px-1 text-xs font-bold text-ink-400">連結已失效（旅伴重新產生過連結，請跟他們要新連結）</p>
-          <div class="card divide-y divide-ink-100 dark:divide-ink-800">
-            <div v-for="t in account.staleTrips" :key="t.trip_id" class="flex items-center gap-3 py-2.5 pr-2 pl-4">
-              <Link2Off class="size-4 shrink-0 text-ink-300" />
-              <div class="min-w-0 flex-1">
-                <p class="truncate text-sm font-semibold text-ink-500 dark:text-ink-300">{{ t.name }}</p>
-                <p class="text-xs text-ink-400">{{ formatRange(t.start_date, t.end_date) }}</p>
-              </div>
-              <button type="button" class="icon-btn shrink-0" :aria-label="`從帳號移除 ${t.name}`" @click="account.removeTrip(t.trip_id)">
-                <X class="size-4" />
-              </button>
-            </div>
-          </div>
-        </div>
-      </section>
-
-      <section class="mt-8">
-        <h2 class="section-title mb-3">用旅程連結開啟</h2>
-        <form class="card flex gap-2 p-3" @submit.prevent="openLink">
-          <label for="join-link" class="sr-only">旅程連結</label>
-          <input id="join-link" v-model="link" class="input min-w-0 flex-1" placeholder="貼上旅伴傳來的連結" autocomplete="off" />
-          <button type="submit" class="btn-dark shrink-0" :disabled="!link.trim()"><Link2 class="size-4" />開啟</button>
-        </form>
-        <p class="mt-2 px-1 text-xs leading-relaxed text-ink-400">
-          拿到連結的人都能查看與編輯那一趟旅程；開過一次之後，這台裝置會記住，下次直接從上面的清單進去。
-        </p>
       </section>
     </main>
 

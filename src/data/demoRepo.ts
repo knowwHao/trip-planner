@@ -1,6 +1,6 @@
 import type {
+  AccountInfo,
   AccountSession,
-  AccountTrip,
   Expense,
   ExpenseInput,
   ExpenseShare,
@@ -20,14 +20,16 @@ import type {
   TripData,
   TripInput,
   TripPatch,
+  TripSummary,
 } from '@/types'
 import { toMinor } from '@/lib/money'
 import {
   AccountSessionError,
   ConflictError,
   InUseError,
-  InvalidTokenError,
+  LastMemberError,
   NameTakenError,
+  NoAccessError,
   type ItemMove,
   type SpotMove,
   type TripRepository,
@@ -35,11 +37,10 @@ import {
 import { isValidPin, PIN_LOCK_MINUTES, PIN_MAX_ATTEMPTS } from '@/lib/pin'
 import { RowMissingError } from './writeCheck'
 import { channelName } from './realtime'
-import { randomId, randomToken, seedDemoTrip } from './demoSeed'
+import { randomId, randomKey, seedDemoTrip } from './demoSeed'
 
 const DB_KEY = 'trip-demo-db-v1'
 
-type StoredTrip = Trip & { token: string }
 type StoredShare = ExpenseShare & { trip_id: Id }
 
 /** Demo 只存在這個瀏覽器，密碼直接存明碼；真正的資料庫存的是加鹽雜湊 */
@@ -53,7 +54,7 @@ interface DemoAccount {
 }
 
 export interface DemoDb {
-  trips: StoredTrip[]
+  trips: Trip[]
   participants: Participant[]
   spots: Spot[]
   items: SpotItem[]
@@ -61,12 +62,13 @@ export interface DemoDb {
   shares: StoredShare[]
   transfers: Transfer[]
   accounts: DemoAccount[]
-  account_trips: { account_id: Id; trip_id: Id; token: string; added_at: string }[]
 }
 
 export function emptyDb(): DemoDb {
-  return { trips: [], participants: [], spots: [], items: [], expenses: [], shares: [], transfers: [], accounts: [], account_trips: [] }
+  return { trips: [], participants: [], spots: [], items: [], expenses: [], shares: [], transfers: [], accounts: [] }
 }
+
+const NO_FLIGHT = { airline: '', flight_no: '', dep_airport: '', arr_airport: '', arr_time: null, arr_day_offset: 0 }
 
 const now = () => new Date().toISOString()
 const clone = <T>(v: T): T => JSON.parse(JSON.stringify(v)) as T
@@ -83,12 +85,16 @@ function readStorage(): DemoDb | null {
       s.booking ??= null
       // 與 schema.sql 一樣拿掉舊版的預估花費
       Reflect.deleteProperty(s, 'est_cost')
+      for (const [k, v] of Object.entries(NO_FLIGHT)) (s as unknown as Record<string, unknown>)[k] ??= v
     }
     for (const e of db.expenses) e.twd_amount ??= null
     // 加入子項目與帳號前存下的示範資料
     db.items ??= []
     db.accounts ??= []
-    db.account_trips ??= []
+    // 與 schema.sql 一樣拿掉旅程連結；舊的示範旅程沒有成員，誰都看不到
+    for (const t of db.trips) Reflect.deleteProperty(t, 'token')
+    for (const p of db.participants) p.account_id ??= null
+    Reflect.deleteProperty(db, 'account_trips')
     return db
   } catch {
     return null
@@ -97,11 +103,12 @@ function readStorage(): DemoDb | null {
 
 /**
  * Demo 模式：資料存在 localStorage，行為盡量貼近 schema.sql
- * （token 檢查、版本號、刪除限制、幣別鎖定），同一瀏覽器的其他分頁以 BroadcastChannel 模擬即時同步
+ * （登入憑證、成員權限、版本號、刪除限制、幣別鎖定），同一瀏覽器的其他分頁以 BroadcastChannel 模擬即時同步
  */
 export class DemoRepo implements TripRepository {
   readonly mode = 'demo' as const
-  private token: string | null = null
+  private session: AccountSession | null = null
+  private tripId: Id | null = null
 
   constructor(private db: DemoDb = readStorage() ?? emptyDb()) {}
 
@@ -119,11 +126,24 @@ export class DemoRepo implements TripRepository {
     if (fresh) this.db = fresh
   }
 
-  /** 模擬 RLS：token 不符就當作沒有這趟旅程 */
-  private guard(): StoredTrip {
+  /** 模擬 require_account()：憑證不符就當作登入失效 */
+  private me(): DemoAccount {
     this.sync()
-    const trip = this.token ? this.db.trips.find((t) => t.token === this.token) : undefined
-    if (!trip) throw new InvalidTokenError()
+    const s = this.session
+    const acc = s ? this.db.accounts.find((a) => a.id === s.id && a.key === s.key) : undefined
+    if (!acc) throw new AccountSessionError()
+    return acc
+  }
+
+  private isMember(tripId: Id, accountId: Id) {
+    return this.db.participants.some((p) => p.trip_id === tripId && p.account_id === accountId)
+  }
+
+  /** 模擬 RLS：要登入，而且是這趟旅程的成員 */
+  private guard(): Trip {
+    const acc = this.me()
+    const trip = this.tripId ? this.db.trips.find((t) => t.id === this.tripId) : undefined
+    if (!trip || !this.isMember(trip.id, acc.id)) throw new NoAccessError()
     return trip
   }
 
@@ -131,10 +151,10 @@ export class DemoRepo implements TripRepository {
     return list.filter((r) => r.trip_id === tripId)
   }
 
-  /** 開一趟示範旅程並回傳 token */
-  createDemoTrip(): { id: Id; token: string } {
-    this.sync()
-    const { trip, data } = seedDemoTrip()
+  /** 開一趟示範旅程，登入的人是成員；回傳旅程 id */
+  createDemoTrip(): Id {
+    const acc = this.me()
+    const { trip, data } = seedDemoTrip({ id: acc.id, name: acc.name })
     this.db.trips.push(trip)
     this.db.participants.push(...data.participants)
     this.db.spots.push(...data.spots)
@@ -143,28 +163,62 @@ export class DemoRepo implements TripRepository {
     this.db.shares.push(...data.shares)
     this.db.transfers.push(...data.transfers)
     this.commit()
-    return { id: trip.id, token: trip.token }
+    return trip.id
   }
 
-  async createTrip(input: TripInput, participantNames: string[]) {
-    this.sync()
+  setSession(session: AccountSession | null) {
+    this.session = session
+  }
+
+  async whoami(): Promise<AccountInfo> {
+    const acc = this.me()
+    return { id: acc.id, name: acc.name }
+  }
+
+  async listAccounts(): Promise<AccountInfo[]> {
+    this.me()
+    return this.db.accounts.map((a) => ({ id: a.id, name: a.name })).sort((a, b) => a.name.toLowerCase().localeCompare(b.name.toLowerCase()))
+  }
+
+  async listTrips(): Promise<TripSummary[]> {
+    const acc = this.me()
+    return this.db.trips
+      .filter((t) => this.isMember(t.id, acc.id))
+      .map(({ id, name, start_date, end_date }) => ({ id, name, start_date, end_date }))
+      .sort((a, b) => a.start_date.localeCompare(b.start_date))
+  }
+
+  private participant(tripId: Id, name: string, sort_order: number, account_id: Id | null): Participant {
+    return { id: randomId(), trip_id: tripId, account_id, name, sort_order, version: 1, created_at: now() }
+  }
+
+  async createTrip(input: TripInput, members: Id[], names: string[]) {
+    const acc = this.me()
     const t = now()
-    const trip: StoredTrip = { ...input, id: randomId(), token: randomToken(), version: 1, created_at: t, updated_at: t }
+    const trip: Trip = { ...input, id: randomId(), version: 1, created_at: t, updated_at: t }
     this.db.trips.push(trip)
-    const names = [...new Set(participantNames.map((n) => n.trim()).filter(Boolean))]
-    names.forEach((name, i) =>
-      this.db.participants.push({ id: randomId(), trip_id: trip.id, name, sort_order: i, version: 1, created_at: t }),
-    )
+    // 與 create_trip() 相同：自己排第一，接著是勾選的成員，最後是只有名字的旅伴；名字重複的略過
+    const rows = [this.participant(trip.id, acc.name, 0, acc.id)]
+    const taken = (name: string) => rows.some((r) => r.name === name)
+    members.forEach((id, i) => {
+      const a = this.db.accounts.find((x) => x.id === id)
+      if (a && !taken(a.name)) rows.push(this.participant(trip.id, a.name, i + 1, a.id))
+    })
+    names.forEach((raw, i) => {
+      const name = raw.trim()
+      if (name && !taken(name)) rows.push(this.participant(trip.id, name, 101 + i, null))
+    })
+    this.db.participants.push(...rows)
     this.commit()
-    return { id: trip.id, token: trip.token }
+    return trip.id
   }
 
-  setToken(token: string | null) {
-    this.token = token
+  setTrip(tripId: Id | null) {
+    this.tripId = tripId
   }
 
   async loadTrip(): Promise<TripData> {
-    const { token: _token, ...trip } = this.guard()
+    const trip = this.guard()
     const id = trip.id
     return clone({
       trip,
@@ -188,13 +242,6 @@ export class DemoRepo implements TripRepository {
     this.commit()
   }
 
-  async regenerateToken() {
-    const trip = this.guard()
-    trip.token = randomToken()
-    this.commit()
-    return trip.token
-  }
-
   async deleteTrip() {
     const { id } = this.guard()
     this.db.trips = this.db.trips.filter((t) => t.id !== id)
@@ -202,10 +249,38 @@ export class DemoRepo implements TripRepository {
     this.db.participants = keep(this.db.participants)
     this.db.spots = keep(this.db.spots)
     this.db.items = keep(this.db.items)
-    this.db.account_trips = this.db.account_trips.filter((a) => a.trip_id !== id)
     this.db.expenses = keep(this.db.expenses)
     this.db.shares = keep(this.db.shares)
     this.db.transfers = keep(this.db.transfers)
+    this.commit()
+  }
+
+  async addMember(accountId: Id, participantId?: Id) {
+    const trip = this.guard()
+    const acc = this.db.accounts.find((a) => a.id === accountId)
+    if (!acc) throw new RowMissingError()
+    const list = this.ofTrip(this.db.participants, trip.id)
+    if (list.some((p) => p.account_id === accountId)) return
+    // 與 add_trip_member() 相同：指定的旅伴、或同名的旅伴直接換成成員，旅費紀錄跟著保留
+    const target = participantId
+      ? list.find((p) => p.id === participantId && !p.account_id)
+      : list.find((p) => p.name === acc.name && !p.account_id)
+    if (participantId && !target) throw new RowMissingError()
+    if (target) {
+      if (list.some((p) => p.id !== target.id && p.name === acc.name)) throw new Error('已經有同名的旅伴')
+      Object.assign(target, { account_id: acc.id, name: acc.name, version: target.version + (target.name === acc.name ? 0 : 1) })
+    } else {
+      this.db.participants.push(this.participant(trip.id, acc.name, Math.max(-1, ...list.map((p) => p.sort_order)) + 1, acc.id))
+    }
+    this.commit()
+  }
+
+  async removeMember(participantId: Id) {
+    const trip = this.guard()
+    const p = this.db.participants.find((x) => x.id === participantId && x.trip_id === trip.id)
+    if (!p) throw new NoAccessError()
+    if (p.account_id && !this.ofTrip(this.db.participants, trip.id).some((x) => x.account_id && x.id !== p.id)) throw new LastMemberError()
+    p.account_id = null
     this.commit()
   }
 
@@ -213,9 +288,7 @@ export class DemoRepo implements TripRepository {
     const trip = this.guard()
     const existing = new Set(this.ofTrip(this.db.participants, trip.id).map((p) => p.name))
     if (rows.some((r) => existing.has(r.name.trim()))) throw new Error('已經有同名的旅伴')
-    for (const r of rows) {
-      this.db.participants.push({ id: randomId(), trip_id: trip.id, name: r.name.trim(), sort_order: r.sort_order, version: 1, created_at: now() })
-    }
+    for (const r of rows) this.db.participants.push(this.participant(trip.id, r.name.trim(), r.sort_order, null))
     this.commit()
   }
 
@@ -224,6 +297,8 @@ export class DemoRepo implements TripRepository {
     const p = this.db.participants.find((x) => x.id === id && x.trip_id === trip.id)
     if (!p) throw new RowMissingError()
     if (p.version !== version) throw new ConflictError()
+    // 與 sync_member_name 觸發器相同：成員的名字固定是帳號名稱
+    if (p.account_id) return
     if (this.db.participants.some((x) => x.trip_id === trip.id && x.id !== id && x.name === name.trim())) {
       throw new Error('已經有同名的旅伴')
     }
@@ -239,6 +314,8 @@ export class DemoRepo implements TripRepository {
       this.db.shares.some((s) => s.trip_id === trip.id && s.participant_id === id) ||
       this.db.transfers.some((t) => t.trip_id === trip.id && (t.from_id === id || t.to_id === id))
     if (used) throw new InUseError()
+    const p = this.db.participants.find((x) => x.id === id && x.trip_id === trip.id)
+    if (p?.account_id && !this.ofTrip(this.db.participants, trip.id).some((x) => x.account_id && x.id !== id)) throw new LastMemberError()
     this.db.participants = this.db.participants.filter((p) => !(p.id === id && p.trip_id === trip.id))
     this.commit()
   }
@@ -410,23 +487,20 @@ export class DemoRepo implements TripRepository {
     return { ok: false, remaining: PIN_MAX_ATTEMPTS - acc.failed }
   }
 
-  /** 模擬 require_account()：憑證不符就當作登入失效 */
-  private requireAccount(session: AccountSession): DemoAccount {
-    this.sync()
-    const acc = this.db.accounts.find((a) => a.id === session.id && a.key === session.key)
-    if (!acc) throw new AccountSessionError()
-    return acc
-  }
-
   async registerAccount(name: string, pin: string) {
     this.sync()
     const trimmed = name.trim()
     if (!isValidPin(pin) || [...trimmed].length < 2 || [...trimmed].length > 20) throw new Error('資料格式不符，請檢查後再試')
     if (this.db.accounts.some((a) => a.name.toLowerCase() === trimmed.toLowerCase())) throw new NameTakenError()
-    const acc: DemoAccount = { id: randomId(), name: trimmed, pin, key: randomToken(), failed: 0, locked_until: null }
+    const acc: DemoAccount = { id: randomId(), name: trimmed, pin, key: randomKey(), failed: 0, locked_until: null }
     this.db.accounts.push(acc)
     this.commit()
     return { id: acc.id, name: acc.name, key: acc.key }
+  }
+
+  async nameAvailable(name: string) {
+    this.sync()
+    return !this.db.accounts.some((a) => a.name.toLowerCase() === name.trim().toLowerCase())
   }
 
   async loginAccount(name: string, pin: string) {
@@ -434,42 +508,15 @@ export class DemoRepo implements TripRepository {
     return this.attemptPin(this.db.accounts.find((a) => a.name.toLowerCase() === name.trim().toLowerCase()), pin)
   }
 
-  async changeAccountPin(session: AccountSession, oldPin: string, newPin: string): Promise<PinResult> {
-    const acc = this.requireAccount(session)
+  async changeAccountPin(oldPin: string, newPin: string): Promise<PinResult> {
+    const acc = this.me()
     if (!isValidPin(newPin)) throw new Error('資料格式不符，請檢查後再試')
     const res = this.attemptPin(acc, oldPin)
     if (!res.ok) return res
     acc.pin = newPin
-    acc.key = randomToken()
+    acc.key = randomKey()
     this.commit()
     return { ok: true, session: { id: acc.id, name: acc.name, key: acc.key } }
-  }
-
-  async listAccountTrips(session: AccountSession): Promise<AccountTrip[]> {
-    const acc = this.requireAccount(session)
-    return this.db.account_trips
-      .filter((a) => a.account_id === acc.id)
-      .sort((a, b) => b.added_at.localeCompare(a.added_at))
-      .flatMap((a) => {
-        const t = this.db.trips.find((x) => x.id === a.trip_id)
-        return t ? [{ trip_id: t.id, token: t.token === a.token ? t.token : null, name: t.name, start_date: t.start_date, end_date: t.end_date }] : []
-      })
-  }
-
-  async saveAccountTrip(session: AccountSession, token: string) {
-    const acc = this.requireAccount(session)
-    const trip = this.db.trips.find((t) => t.token === token)
-    if (!trip) throw new InvalidTokenError()
-    const row = this.db.account_trips.find((a) => a.account_id === acc.id && a.trip_id === trip.id)
-    if (row) row.token = token
-    else this.db.account_trips.push({ account_id: acc.id, trip_id: trip.id, token, added_at: now() })
-    this.commit()
-  }
-
-  async removeAccountTrip(session: AccountSession, tripId: Id) {
-    const acc = this.requireAccount(session)
-    this.db.account_trips = this.db.account_trips.filter((a) => !(a.account_id === acc.id && a.trip_id === tripId))
-    this.commit()
   }
 
   private bc: BroadcastChannel | null = null
@@ -477,7 +524,7 @@ export class DemoRepo implements TripRepository {
   subscribe(onChange: () => void, onLive: (live: boolean) => void) {
     let cancelled = false
     let bc: BroadcastChannel | null = null
-    void channelName(this.token).then((name) => {
+    void channelName(this.tripId).then((name) => {
       if (cancelled || !name || typeof BroadcastChannel === 'undefined') return
       bc = new BroadcastChannel(name)
       bc.onmessage = () => onChange()

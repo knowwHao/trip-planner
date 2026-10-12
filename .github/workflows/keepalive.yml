@@ -13,8 +13,8 @@ jobs:
   ping:
     runs-on: ubuntu-latest
     steps:
-      # 不帶旅程 token：RLS 讓結果固定是空陣列，請求本身就算一次活動；回傳非空代表 RLS 失守
-      - name: Query trips without trip token
+      # 不帶登入憑證：RLS 讓結果固定是空陣列，請求本身就算一次活動；回傳非空代表 RLS 失守
+      - name: Query trips without login
         env:
           SUPABASE_URL: ${{ secrets.VITE_SUPABASE_URL }}
           SUPABASE_ANON_KEY: ${{ secrets.VITE_SUPABASE_ANON_KEY }}

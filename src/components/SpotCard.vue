@@ -10,6 +10,7 @@ import { formatTime } from '@/lib/format'
 import { bookingLabel, categoryInfo, itemWords, nextBooking } from '@/lib/category'
 import { formatMoney } from '@/lib/money'
 import { expenseTwd } from '@/lib/split'
+import { flightSummary, hasFlight } from '@/lib/flight'
 
 const props = withDefaults(defineProps<{ spot: Spot; draggable?: boolean }>(), { draggable: true })
 const emit = defineEmits<{ edit: []; booking: []; 'item-edit': [item: SpotItem | null]; expenses: [] }>()
@@ -24,6 +25,11 @@ const words = computed(() => itemWords(props.spot.category))
 const showItems = computed(() => items.value.length > 0 || props.spot.category === 'shop')
 const open = computed(() => expanded.isOpen(props.spot.id))
 const expenses = computed(() => store.expensesBySpot.get(props.spot.id) ?? [])
+const flight = computed(() => {
+  if (!hasFlight(props.spot)) return ''
+  const line = flightSummary(props.spot)
+  return props.spot.airline && props.spot.flight_no ? `${props.spot.airline} ${line}` : line
+})
 const spent = computed(() => (store.trip ? expenses.value.reduce((s, e) => s + expenseTwd(e, store.trip!), 0) : 0))
 
 function addFirst() {
@@ -61,6 +67,9 @@ const status = computed(() => {
           <span v-if="spot.start_time" class="num shrink-0 text-sm font-bold text-sea-600 dark:text-sea-400">{{ formatTime(spot.start_time) }}</span>
           <span class="min-w-0 font-bold break-words">{{ spot.title }}</span>
         </div>
+        <p v-if="flight" class="num mt-0.5 text-xs font-semibold break-words text-ink-600 dark:text-ink-200">
+          <span class="mr-1" aria-hidden="true">✈️</span>{{ flight }}
+        </p>
         <p v-if="spot.address" class="mt-0.5 flex items-start gap-1 text-xs text-ink-400 dark:text-ink-300">
           <MapPin class="mt-0.5 size-3 shrink-0" /><span class="min-w-0 break-words">{{ spot.address }}</span>
         </p>

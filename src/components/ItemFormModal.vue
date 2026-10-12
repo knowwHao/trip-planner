@@ -119,7 +119,7 @@ async function remove() {
         <label class="label" for="item-map">Google 地圖連結（選填）</label>
         <input id="item-map" v-model="form.mapUrl" class="input" inputmode="url" placeholder="https://maps.app.goo.gl/…" autocomplete="off" />
         <p v-if="touched && errors.mapUrl" class="mt-1 text-xs text-rose-500">{{ errors.mapUrl }}</p>
-        <p v-else class="mt-1 text-xs text-ink-400">沒填就用地址或名稱搜尋</p>
+        <p v-else class="mt-1 text-xs text-ink-400">沒填就用地址搜尋，兩個都沒填就不放地圖</p>
       </div>
       <div>
         <label class="label" for="item-note">備註（選填）</label>

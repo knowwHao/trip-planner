@@ -1,17 +1,14 @@
 <script setup lang="ts">
 import { computed, onBeforeUnmount, watch } from 'vue'
-import { RouterLink, RouterView, useRoute, useRouter } from 'vue-router'
-import { ChevronLeft, House, Link2Off, LoaderCircle, MapPinned, RefreshCw, Settings, Trash2, Wallet } from 'lucide-vue-next'
+import { RouterLink, RouterView, useRoute } from 'vue-router'
+import { ChevronLeft, House, LoaderCircle, Lock, MapPinned, RefreshCw, Settings, Wallet } from 'lucide-vue-next'
 import EmptyState from '@/components/EmptyState.vue'
 import ThemeToggle from '@/components/ThemeToggle.vue'
 import { useTripStore } from '@/stores/trip'
-import { useSavedTrips } from '@/stores/saved'
 import { formatRange } from '@/lib/format'
 
 const route = useRoute()
-const router = useRouter()
 const store = useTripStore()
-const saved = useSavedTrips()
 
 const tripId = computed(() => String(route.params.tripId))
 watch(tripId, (id) => void store.open(id), { immediate: true })
@@ -23,11 +20,6 @@ const nav = computed(() => [
   { to: `${base.value}/expenses`, label: '旅費', icon: Wallet, active: route.path.endsWith('/expenses') },
   { to: `${base.value}/settings`, label: '設定', icon: Settings, active: route.path.endsWith('/settings') },
 ])
-
-function forget() {
-  saved.remove(tripId.value)
-  void router.push('/')
-}
 </script>
 
 <template>
@@ -95,23 +87,12 @@ function forget() {
       <LoaderCircle class="size-5 animate-spin" />讀取中…
     </div>
     <EmptyState
-      v-else-if="store.status === 'unknown'"
-      :icon="Link2Off"
-      title="這台裝置沒有這趟旅程的連結"
-      description="請用旅伴傳給你的旅程連結開啟，開過一次之後這台裝置就會記住。"
+      v-else-if="store.status === 'noaccess'"
+      :icon="Lock"
+      title="看不到這趟旅程"
+      description="你不是這趟旅程的成員（可能被移出了），或旅程已經被刪除。需要的話請旅伴到旅程的「設定」把你加回去。"
     >
       <RouterLink to="/" class="btn-primary"><House class="size-4" />回我的旅程</RouterLink>
-    </EmptyState>
-    <EmptyState
-      v-else-if="store.status === 'invalid'"
-      :icon="Link2Off"
-      title="這個旅程連結已失效"
-      description="連結可能已經被旅伴重新產生，或整趟旅程被刪除了。請跟旅伴要最新的旅程連結。"
-    >
-      <div class="flex flex-wrap justify-center gap-2">
-        <button type="button" class="btn-outline" @click="forget"><Trash2 class="size-4" />從這台裝置移除</button>
-        <RouterLink to="/" class="btn-primary"><House class="size-4" />回我的旅程</RouterLink>
-      </div>
     </EmptyState>
     <EmptyState v-else :icon="RefreshCw" title="暫時讀不到資料" :description="`請確認網路後再試一次（${store.errorText}）`">
       <div class="flex flex-wrap justify-center gap-2">
