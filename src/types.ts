@@ -45,12 +45,31 @@ export interface Spot {
   map_url: string
   note: string
   /** 預估花費，以旅程的當地幣別計 */
-  est_cost: number | null
   sort_key: number
   version: number
   created_at: string
   updated_at: string
 }
+
+/** 行程底下的子項目，例如一區裡要逛的多間店 */
+export interface SpotItem {
+  id: Id
+  trip_id: Id
+  spot_id: Id
+  title: string
+  address: string
+  map_url: string
+  note: string
+  /** 已逛過／已去過 */
+  done: boolean
+  sort_key: number
+  version: number
+  created_at: string
+  updated_at: string
+}
+
+export type SpotItemInput = Pick<SpotItem, 'spot_id' | 'title' | 'address' | 'map_url' | 'note' | 'sort_key'>
+export type SpotItemPatch = Partial<Pick<SpotItem, 'title' | 'address' | 'map_url' | 'note'>>
 
 export type SplitMode = 'even' | 'custom'
 
@@ -96,6 +115,7 @@ export interface TripData {
   trip: Trip
   participants: Participant[]
   spots: Spot[]
+  items: SpotItem[]
   expenses: Expense[]
   shares: ExpenseShare[]
   transfers: Transfer[]
@@ -106,7 +126,7 @@ export type TripPatch = Partial<TripInput>
 
 export type SpotInput = Pick<
   Spot,
-  'category' | 'booking' | 'day' | 'start_time' | 'title' | 'address' | 'map_url' | 'note' | 'est_cost' | 'sort_key'
+  'category' | 'booking' | 'day' | 'start_time' | 'title' | 'address' | 'map_url' | 'note' | 'sort_key'
 >
 export type SpotPatch = Partial<SpotInput>
 
@@ -137,4 +157,22 @@ export interface SavedTrip {
   start_date: string
   end_date: string
   opened_at: string
+}
+
+/** 登入後存在這台裝置的帳號憑證；改密碼後舊憑證失效 */
+export interface AccountSession {
+  id: Id
+  name: string
+  key: string
+}
+
+export type PinResult = { ok: true; session: AccountSession } | { ok: false; remaining?: number; lockedUntil?: string }
+
+/** 帳號裡存的旅程；token 為 null 表示旅程連結已被重新產生 */
+export interface AccountTrip {
+  trip_id: Id
+  token: string | null
+  name: string
+  start_date: string
+  end_date: string
 }

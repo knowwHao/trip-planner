@@ -1,9 +1,15 @@
 import type {
+  AccountSession,
+  AccountTrip,
   ExpenseInput,
   Id,
   ShareInput,
+  PinResult,
   Spot,
   SpotInput,
+  SpotItem,
+  SpotItemInput,
+  SpotItemPatch,
   SpotPatch,
   TransferInput,
   TripData,
@@ -35,6 +41,27 @@ export class InUseError extends Error {
     super('這位旅伴還有旅費或轉帳紀錄，要先刪掉那些紀錄才能移除')
     this.name = 'InUseError'
   }
+}
+
+/** 這台裝置的帳號憑證已失效（密碼在別的裝置改過） */
+export class AccountSessionError extends Error {
+  constructor() {
+    super('登入已失效，請重新登入')
+    this.name = 'AccountSessionError'
+  }
+}
+
+/** 帳號名稱已經有人用了 */
+export class NameTakenError extends Error {
+  constructor() {
+    super('這個名稱已經有人用了，換一個試試')
+    this.name = 'NameTakenError'
+  }
+}
+
+export interface ItemMove {
+  id: Id
+  sort_key: number
 }
 
 export interface SpotMove {
@@ -72,12 +99,31 @@ export interface TripRepository {
   moveSpots(moves: SpotMove[]): Promise<void>
   deleteSpot(id: Id): Promise<void>
 
+  createItem(input: SpotItemInput): Promise<SpotItem>
+  /** 版本不符丟 ConflictError */
+  updateItem(id: Id, version: number, patch: SpotItemPatch): Promise<void>
+  /** 打勾與排序都不檢查版本，也不會讓別人正在編輯的內容變成衝突 */
+  setItemDone(id: Id, done: boolean): Promise<void>
+  moveItems(moves: ItemMove[]): Promise<void>
+  deleteItem(id: Id): Promise<void>
+
   /** 寫入費用並以 shares 完整取代分攤；修改時版本不符丟 ConflictError */
   saveExpense(input: ExpenseInput, shares: ShareInput[]): Promise<Id>
   deleteExpense(id: Id): Promise<void>
 
   createTransfer(input: TransferInput): Promise<void>
   deleteTransfer(id: Id): Promise<void>
+
+  /** 名稱重複丟 NameTakenError */
+  registerAccount(name: string, pin: string): Promise<AccountSession>
+  loginAccount(name: string, pin: string): Promise<PinResult>
+  /** 成功時回傳新憑證，舊憑證（包括其他裝置的）一併失效 */
+  changeAccountPin(session: AccountSession, oldPin: string, newPin: string): Promise<PinResult>
+  /** 以下憑證失效時丟 AccountSessionError */
+  listAccountTrips(session: AccountSession): Promise<AccountTrip[]>
+  /** token 無效時丟 InvalidTokenError */
+  saveAccountTrip(session: AccountSession, token: string): Promise<void>
+  removeAccountTrip(session: AccountSession, tripId: Id): Promise<void>
 
   /** 收到其他人的異動通知時呼叫 onChange；live 回報即時連線狀態；回傳取消訂閱的函式 */
   subscribe(onChange: () => void, onLive: (live: boolean) => void): () => void

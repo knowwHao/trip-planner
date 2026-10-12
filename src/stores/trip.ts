@@ -1,8 +1,8 @@
 import { defineStore } from 'pinia'
 import { computed, ref, shallowRef } from 'vue'
-import type { Id, Participant, Spot, TripData } from '@/types'
+import type { Expense, Id, Participant, Spot, SpotItem, TripData } from '@/types'
 import { repo } from '@/data'
-import { ConflictError, InvalidTokenError, type SpotMove } from '@/data/repository'
+import { ConflictError, InvalidTokenError, type ItemMove, type SpotMove } from '@/data/repository'
 import { RowMissingError } from '@/data/writeCheck'
 import { errorMessage } from '@/composables/useToast'
 import { tripDayCount } from '@/lib/format'
@@ -150,6 +150,35 @@ export const useTripStore = defineStore('trip', () => {
     }
   }
 
+  /** 子項目打勾：先改畫面再寫入，失敗時以伺服器資料為準 */
+  async function setItemDone(id: Id, done: boolean) {
+    const d = data.value
+    if (!d) return
+    data.value = { ...d, items: d.items.map((i) => (i.id === id ? { ...i, done } : i)) }
+    try {
+      await mutate(() => repo.setItemDone(id, done))
+    } catch (e) {
+      await load()
+      throw e
+    }
+  }
+
+  async function moveItems(moves: ItemMove[]) {
+    const d = data.value
+    if (!d || !moves.length) return
+    const byId = new Map(moves.map((m) => [m.id, m.sort_key]))
+    data.value = {
+      ...d,
+      items: d.items.map((i) => (byId.has(i.id) ? { ...i, sort_key: byId.get(i.id)! } : i)).sort((a, b) => a.sort_key - b.sort_key),
+    }
+    try {
+      await mutate(() => repo.moveItems(moves))
+    } catch (e) {
+      await load()
+      throw e
+    }
+  }
+
   /** 自己重新產生 token 後改用新 token，不必重新驗證 */
   function replaceToken(token: string) {
     if (!tripId.value) return
@@ -187,6 +216,28 @@ export const useTripStore = defineStore('trip', () => {
     return days
   })
 
+  const itemsBySpot = computed(() => {
+    const map = new Map<Id, SpotItem[]>()
+    for (const i of data.value?.items ?? []) {
+      const list = map.get(i.spot_id)
+      if (list) list.push(i)
+      else map.set(i.spot_id, [i])
+    }
+    for (const list of map.values()) list.sort((a, b) => a.sort_key - b.sort_key)
+    return map
+  })
+
+  const expensesBySpot = computed(() => {
+    const map = new Map<Id, Expense[]>()
+    for (const e of data.value?.expenses ?? []) {
+      if (!e.spot_id) continue
+      const list = map.get(e.spot_id)
+      if (list) list.push(e)
+      else map.set(e.spot_id, [e])
+    }
+    return map
+  })
+
   const splitData = computed(() =>
     data.value
       ? {
@@ -217,6 +268,8 @@ export const useTripStore = defineStore('trip', () => {
     participantMap,
     dayCount,
     spotsByDay,
+    itemsBySpot,
+    expensesBySpot,
     balances,
     settlements,
     memberSummaries,
@@ -226,6 +279,8 @@ export const useTripStore = defineStore('trip', () => {
     load,
     mutate,
     moveSpots,
+    setItemDone,
+    moveItems,
     replaceToken,
     participantName,
   }

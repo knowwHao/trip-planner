@@ -1,13 +1,19 @@
 import { createClient, type RealtimeChannel, type SupabaseClient } from '@supabase/supabase-js'
 import type {
+  AccountSession,
+  AccountTrip,
   Expense,
   ExpenseInput,
   ExpenseShare,
   Id,
   Participant,
+  PinResult,
   ShareInput,
   Spot,
   SpotInput,
+  SpotItem,
+  SpotItemInput,
+  SpotItemPatch,
   SpotPatch,
   Transfer,
   TransferInput,
@@ -16,7 +22,16 @@ import type {
   TripInput,
   TripPatch,
 } from '@/types'
-import { ConflictError, InUseError, InvalidTokenError, type SpotMove, type TripRepository } from './repository'
+import {
+  AccountSessionError,
+  ConflictError,
+  InUseError,
+  InvalidTokenError,
+  NameTakenError,
+  type ItemMove,
+  type SpotMove,
+  type TripRepository,
+} from './repository'
 import { RowMissingError, verifyAffected, type OnMissing } from './writeCheck'
 import { channelName } from './realtime'
 
@@ -30,10 +45,13 @@ function check<T>(res: { data: T | null; error: PgError | null }): T {
   // TP409／TP404／TP422 是 schema.sql 自訂的錯誤碼
   if (code === 'TP409') throw new ConflictError()
   if (code === 'TP404') throw new RowMissingError()
+  if (code === 'TP401') throw new AccountSessionError()
   if (code === 'TP422') throw new Error('已經有用原本當地幣別記的旅費，要先改掉那些旅費才能換幣別')
   if (code === '23505') throw new Error('已經有同名的旅伴')
   if (code === '23503') throw new Error('有旅伴或景點剛被別人刪除，請重新整理後再試')
   if (code === '23514' || code === '22023') throw new Error('資料格式不符，請檢查後再試')
+  // 網路斷線時 supabase-js 回的是 TypeError 的訊息，換成看得懂的說法
+  if (res.error && /fetch/i.test(res.error.message)) throw new Error('連不上伺服器，請確認網路後再試')
   if (res.error) throw new Error(res.error.message)
   return res.data as T
 }
@@ -41,9 +59,17 @@ function check<T>(res: { data: T | null; error: PgError | null }): T {
 /** PostgREST 回傳的 numeric 依設定可能是字串，一律轉成 number */
 const num = (v: unknown) => (v === null || v === undefined ? null : Number(v))
 
+function toPinResult(raw: { ok: boolean; id?: Id; name?: string; key?: string; remaining?: number; locked_until?: string }): PinResult {
+  return raw.ok && raw.id && raw.key
+    ? { ok: true, session: { id: raw.id, name: raw.name ?? '', key: raw.key } }
+    : { ok: false, remaining: raw.remaining, lockedUntil: raw.locked_until }
+}
+
 export class SupabaseRepo implements TripRepository {
   readonly mode = 'supabase' as const
   private sb: SupabaseClient
+  /** 帳號相關的 RPC 不需要旅程 token，用不帶 header 的 client，換旅程時不受影響 */
+  private readonly anon: SupabaseClient
   private token: string | null = null
   private tripId: Id | null = null
   private channel: RealtimeChannel | null = null
@@ -53,6 +79,7 @@ export class SupabaseRepo implements TripRepository {
     private readonly anonKey: string,
   ) {
     this.sb = this.createClient(null)
+    this.anon = this.createClient(null)
   }
 
   private createClient(token: string | null) {
@@ -65,9 +92,8 @@ export class SupabaseRepo implements TripRepository {
   }
 
   async createTrip(input: TripInput, participantNames: string[]) {
-    const anon = this.createClient(null)
     return check(
-      await anon.rpc('create_trip', {
+      await this.anon.rpc('create_trip', {
         p_name: input.name,
         p_start: input.start_date,
         p_end: input.end_date,
@@ -111,10 +137,11 @@ export class SupabaseRepo implements TripRepository {
   }
 
   async loadTrip(): Promise<TripData> {
-    const [trip, participants, spots, expenses, shares, transfers] = await Promise.all([
+    const [trip, participants, spots, items, expenses, shares, transfers] = await Promise.all([
       this.sb.from('trips').select('id, name, start_date, end_date, currency, fx_rate, version, created_at, updated_at').maybeSingle(),
       this.sb.from('participants').select('*').order('sort_order').order('created_at'),
       this.sb.from('spots').select('*').order('sort_key'),
+      this.sb.from('spot_items').select('*').order('sort_key'),
       this.sb.from('expenses').select('*'),
       this.sb.from('expense_shares').select('expense_id, participant_id, amount'),
       this.sb.from('transfers').select('*'),
@@ -126,7 +153,8 @@ export class SupabaseRepo implements TripRepository {
     return {
       trip: { ...t, fx_rate: Number(t.fx_rate) },
       participants: check(participants) as Participant[],
-      spots: (check(spots) as Spot[]).map((s) => ({ ...s, est_cost: num(s.est_cost) })),
+      spots: check(spots) as Spot[],
+      items: check(items) as SpotItem[],
       expenses: (check(expenses) as Expense[]).map((e) => ({ ...e, amount: Number(e.amount) })),
       shares: (check(shares) as ExpenseShare[]).map((s) => ({ ...s, amount: num(s.amount) })),
       transfers: check(transfers) as Transfer[],
@@ -172,8 +200,7 @@ export class SupabaseRepo implements TripRepository {
 
   async createSpot(input: SpotInput) {
     const trip_id = this.requireTrip()
-    const s = check(await this.sb.from('spots').insert({ ...input, trip_id }).select().single()) as Spot
-    return { ...s, est_cost: num(s.est_cost) }
+    return check(await this.sb.from('spots').insert({ ...input, trip_id }).select().single()) as Spot
   }
 
   async updateSpot(id: Id, version: number, patch: SpotPatch) {
@@ -200,6 +227,35 @@ export class SupabaseRepo implements TripRepository {
     await this.expectAffected(await this.sb.from('spots').delete().eq('id', id).select('id'), 'ignore')
   }
 
+  async createItem(input: SpotItemInput) {
+    const trip_id = this.requireTrip()
+    return check(await this.sb.from('spot_items').insert({ ...input, trip_id }).select().single()) as SpotItem
+  }
+
+  async updateItem(id: Id, version: number, patch: SpotItemPatch) {
+    await this.expectAffected(
+      await this.sb.from('spot_items').update(patch).eq('id', id).eq('version', version).select('id'),
+      'fail',
+      this.rowExists('spot_items', id),
+    )
+  }
+
+  async setItemDone(id: Id, done: boolean) {
+    await this.expectAffected(await this.sb.from('spot_items').update({ done }).eq('id', id).select('id'), 'fail')
+  }
+
+  async moveItems(moves: ItemMove[]) {
+    await Promise.all(
+      moves.map(async (m) =>
+        this.expectAffected(await this.sb.from('spot_items').update({ sort_key: m.sort_key }).eq('id', m.id).select('id'), 'ignore'),
+      ),
+    )
+  }
+
+  async deleteItem(id: Id) {
+    await this.expectAffected(await this.sb.from('spot_items').delete().eq('id', id).select('id'), 'ignore')
+  }
+
   async saveExpense(input: ExpenseInput, shares: ShareInput[]) {
     return check(await this.sb.rpc('save_expense', { p_expense: input, p_shares: shares })) as Id
   }
@@ -215,6 +271,36 @@ export class SupabaseRepo implements TripRepository {
 
   async deleteTransfer(id: Id) {
     await this.expectAffected(await this.sb.from('transfers').delete().eq('id', id).select('id'), 'ignore')
+  }
+
+  async registerAccount(name: string, pin: string): Promise<AccountSession> {
+    const res = await this.anon.rpc('account_register', { p_name: name, p_pin: pin })
+    if (res.error?.code === '23505') throw new NameTakenError()
+    return check(res) as AccountSession
+  }
+
+  async loginAccount(name: string, pin: string) {
+    return toPinResult(check(await this.anon.rpc('account_login', { p_name: name, p_pin: pin })))
+  }
+
+  async changeAccountPin(session: AccountSession, oldPin: string, newPin: string) {
+    return toPinResult(
+      check(
+        await this.anon.rpc('account_change_pin', { p_account: session.id, p_key: session.key, p_old_pin: oldPin, p_new_pin: newPin }),
+      ),
+    )
+  }
+
+  async listAccountTrips(session: AccountSession) {
+    return check(await this.anon.rpc('account_list_trips', { p_account: session.id, p_key: session.key })) as AccountTrip[]
+  }
+
+  async saveAccountTrip(session: AccountSession, token: string) {
+    check(await this.anon.rpc('account_save_trip', { p_account: session.id, p_key: session.key, p_token: token }))
+  }
+
+  async removeAccountTrip(session: AccountSession, tripId: Id) {
+    check(await this.anon.rpc('account_remove_trip', { p_account: session.id, p_key: session.key, p_trip: tripId }))
   }
 
   subscribe(onChange: () => void, onLive: (live: boolean) => void) {

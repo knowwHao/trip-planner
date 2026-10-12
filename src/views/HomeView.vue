@@ -1,19 +1,23 @@
 <script setup lang="ts">
 import { computed, ref } from 'vue'
 import { RouterLink, useRouter } from 'vue-router'
-import { ChevronRight, FlaskConical, Link2, Luggage, Plus } from 'lucide-vue-next'
+import { ChevronRight, CloudUpload, FlaskConical, Link2, Link2Off, Luggage, Plus, UserRound, X } from 'lucide-vue-next'
 import BrandMark from '@/components/BrandMark.vue'
 import ThemeToggle from '@/components/ThemeToggle.vue'
 import EmptyState from '@/components/EmptyState.vue'
 import TripFormModal from '@/components/TripFormModal.vue'
+import AccountModal from '@/components/AccountModal.vue'
 import { createDemoTrip, isDemo, repo } from '@/data'
 import { useSavedTrips } from '@/stores/saved'
+import { useAccountStore } from '@/stores/account'
 import type { SavedTrip, TripInput } from '@/types'
 import { diffDays, formatRange, todayYmd } from '@/lib/format'
 import { errorMessage, toast } from '@/composables/useToast'
 
 const router = useRouter()
 const saved = useSavedTrips()
+const account = useAccountStore()
+const accountOpen = ref(false)
 
 const trips = computed(() =>
   [...saved.list].sort((a, b) => {
@@ -78,7 +82,18 @@ function openDemo() {
         <BrandMark :size="34" />
         <p class="truncate text-lg font-black tracking-tight">旅遊規劃</p>
       </div>
-      <ThemeToggle />
+      <div class="flex shrink-0 items-center gap-1">
+        <button
+          type="button"
+          class="flex items-center gap-1.5 rounded-2xl px-3 py-2 text-sm font-semibold transition hover:bg-ink-100 dark:hover:bg-ink-800"
+          :aria-label="account.session ? `帳號：${account.session.name}` : '登入或註冊'"
+          @click="accountOpen = true"
+        >
+          <UserRound class="size-4" />
+          <span class="max-w-28 truncate">{{ account.session?.name ?? '登入' }}</span>
+        </button>
+        <ThemeToggle />
+      </div>
     </header>
 
     <main class="mx-auto max-w-3xl px-4 pt-2 pb-16">
@@ -95,7 +110,23 @@ function openDemo() {
       </section>
 
       <section class="mt-8">
-        <h2 class="section-title mb-3">我的旅程</h2>
+        <div class="mb-3 flex items-center justify-between gap-2">
+          <h2 class="section-title">我的旅程</h2>
+          <span v-if="account.session" class="chip-done">已同步到 {{ account.session.name }}</span>
+        </div>
+        <button
+          v-if="!account.session"
+          type="button"
+          class="mb-3 flex w-full items-center gap-3 rounded-3xl border border-dashed border-ink-200 px-4 py-3 text-left transition hover:border-sea-400 dark:border-ink-700"
+          @click="accountOpen = true"
+        >
+          <CloudUpload class="size-5 shrink-0 text-sea-600 dark:text-sea-400" />
+          <span class="min-w-0 flex-1 text-sm">
+            <span class="font-semibold">清單只存在這台裝置</span>
+            <span class="block text-xs text-ink-400">登入或註冊帳號，換手機也找得回旅程</span>
+          </span>
+          <ChevronRight class="size-4 shrink-0 text-ink-300" />
+        </button>
         <div v-if="trips.length" class="space-y-2.5">
           <RouterLink
             v-for="t in trips"
@@ -117,6 +148,22 @@ function openDemo() {
         <div v-else class="card">
           <EmptyState :icon="Luggage" title="這台裝置還沒有旅程" description="建立一趟新旅程，或用旅伴傳給你的旅程連結開啟" />
         </div>
+
+        <div v-if="account.staleTrips.length" class="mt-4">
+          <p class="mb-2 px-1 text-xs font-bold text-ink-400">連結已失效（旅伴重新產生過連結，請跟他們要新連結）</p>
+          <div class="card divide-y divide-ink-100 dark:divide-ink-800">
+            <div v-for="t in account.staleTrips" :key="t.trip_id" class="flex items-center gap-3 py-2.5 pr-2 pl-4">
+              <Link2Off class="size-4 shrink-0 text-ink-300" />
+              <div class="min-w-0 flex-1">
+                <p class="truncate text-sm font-semibold text-ink-500 dark:text-ink-300">{{ t.name }}</p>
+                <p class="text-xs text-ink-400">{{ formatRange(t.start_date, t.end_date) }}</p>
+              </div>
+              <button type="button" class="icon-btn shrink-0" :aria-label="`從帳號移除 ${t.name}`" @click="account.removeTrip(t.trip_id)">
+                <X class="size-4" />
+              </button>
+            </div>
+          </div>
+        </div>
       </section>
 
       <section class="mt-8">
@@ -133,5 +180,6 @@ function openDemo() {
     </main>
 
     <TripFormModal :open="creating" :saving="saving" @close="creating = false" @submit="create" />
+    <AccountModal :open="accountOpen" @close="accountOpen = false" />
   </div>
 </template>

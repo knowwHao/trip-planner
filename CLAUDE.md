@@ -4,7 +4,8 @@
 Vue 3 + Vite + TypeScript + Tailwind CSS v4 + Pinia + Vue Router（hash 模式）+ PWA + SortableJS；
 資料在 Supabase（未設定 env 時進 Demo 模式，存 localStorage）；部署在 GitHub Pages。
 不做帳號登入：拿到旅程連結 `#/t/<token>` 的人都能讀寫那一趟，token 走 `x-trip-token` header、由 RLS 比對；
-任何人都能經 `create_trip()` 建新旅程，伺服器端沒有旅程清單（「我的旅程」只存在各自裝置的 localStorage）。
+任何人都能經 `create_trip()` 建新旅程，伺服器端沒有旅程清單（「我的旅程」存在各自裝置的 localStorage）。
+帳號是選用的：名稱＋6～8 位數字密碼（做法同 sports-ledger 的成員密碼），只用來跨裝置保管「我的旅程」，不影響旅程權限。
 架構與做法沿用姊妹專案 `knowwHao/sports-ledger`（球友記帳）。人看的完整說明在 `README.md`。
 
 ## 常用指令
@@ -23,7 +24,7 @@ npm run build        # vue-tsc 型別檢查 + vite build 到 dist/
 - **金鑰**：Supabase anon key 只能透過 env 注入，不得寫死；任何地方都不得使用 `service_role` key
 - **localStorage 鍵名**：與 sports-ledger 同在 `knowwhao.github.io` 一個 origin，鍵名一律 `trip-` 開頭，不可撞名
 - **改 schema**：每張表都要開 RLS、有 `trip_all` policy（子表 `using`／`with check` 都是 `trip_id = (select current_trip_id())`）、
-  明確 grant 給 anon／authenticated（預設權限已收回）且收回 truncate；子表參照旅伴／景點一律用帶 `trip_id` 的複合外鍵；
+  明確 grant 給 anon／authenticated（預設權限已收回）且收回 truncate（唯一例外是 `accounts`、`account_trips`：完全不授權、沒有 policy，只能經 `account_*` 函式存取）；子表參照旅伴／景點一律用帶 `trip_id` 的複合外鍵；
   新增 view 一律 `with (security_invoker = true)`；新增函式要 `revoke execute ... from public` 再明確 grant；
   有內容欄位的表要掛 `bump_version` 觸發器（排序欄位列在它的 skip 清單裡）；新欄位一律寫在「後來加的欄位」段落用 `add column if not exists`，跨欄位 check 用具名 constraint 包在 `if not exists` 裡；
   `schema.sql` 要可重複執行，也要能套在舊版 DB 上升級；改完用 PGlite（`@electric-sql/pglite`，不在依賴內，臨時裝在專案外）
@@ -32,7 +33,8 @@ npm run build        # vue-tsc 型別檢查 + vite build 到 dist/
 - **旅程與 token 的寫入**：`trips` 只能經 `create_trip()` 新增、token 只能經 `regenerate_trip_token()` 換發，不要重新 grant `trips` 的 insert 或 token 欄位的 update；
   旅費一律經 `save_expense()` 連同分攤一起寫
 - **同時編輯**：改內容一律帶 version（樂觀鎖），版本不符要丟 `ConflictError` 讓畫面走 `saveWithConflict()`；
-  寫入一律經 `trip` store 的 `mutate()`（成功後會廣播通知其他人並重讀）；拖曳排序只改 `day`／`sort_key`，不檢查版本
+  寫入一律經 `trip` store 的 `mutate()`（成功後會廣播通知其他人並重讀）；拖曳排序只改 `day`／`sort_key`、子項目打勾只改 `done`，都不檢查版本
+- **帳號**：密碼格式與鎖定次數在 `src/lib/pin.ts`，要與 `schema.sql` 一致；帳號存的旅程 token 只在與旅程目前 token 相同時才回傳，不要改成直接回傳最新 token（會讓外流的連結繞過「重新產生」）
 - **改金額或結算邏輯**：先在 `src/lib/split.test.ts` 補會失敗的測試，再改 `split.ts`；結算金額一律新台幣整數，外幣在換算時才四捨五入
 - **手機版**：375px 寬不可水平溢出（`document.documentElement.scrollWidth` 不得大於視窗寬）
 - 路由是 hash 模式，站內連結用 router 產生；完整旅程網址參考 `src/views/TripSettingsView.vue` 的 `tripUrl`
@@ -48,12 +50,15 @@ npm run build        # vue-tsc 型別檢查 + vite build 到 dist/
   （0 列時再確認 token 與這筆是否還在，分辨連結失效、別人改過、資料已不在）
 - `src/data/realtime.ts`：即時同步的頻道名稱（token 的 SHA-256），廣播只傳「有東西改了」
 - `src/data/index.ts`：依 `VITE_SUPABASE_*` 有無選 repo；`demoSeed.ts` 是示範旅程
-- `src/stores/saved.ts`：這台裝置開過的旅程（含 token）；`src/stores/trip.ts`：目前開啟的旅程、讀取／重讀、`mutate()`、拖曳的樂觀更新、彙整的 computed
+- `src/stores/account.ts`：帳號登入、與「我的旅程」雙向同步；`src/components/AccountModal.vue`：登入／註冊／改密碼
+- `src/stores/saved.ts`：這台裝置開過的旅程（含 token），加入、移除、換 token 時順便同步到帳號；`src/stores/trip.ts`：目前開啟的旅程、讀取／重讀、`mutate()`、拖曳的樂觀更新、彙整的 computed
 - `src/composables/useConflict.ts`：`saveWithConflict()`，別人改過時問「用我的覆蓋／看最新版本」
 - `src/router.ts`：`/` 我的旅程、`/t/:token`（`JoinView` 記下 token 後以 replace 導到旅程頁，網址不留 token）、`/trips/:tripId`（`TripLayout` 底下行程／旅費／設定）
-- 行程：`src/views/ItineraryView.vue`、`src/components/SpotList.vue`（SortableJS，拖完先把 DOM 放回原位再改資料）、`SpotCard.vue`、`SpotFormModal.vue`
+- 行程：`src/views/ItineraryView.vue`、`src/components/SpotList.vue`（SortableJS，拖完先把 DOM 放回原位再改資料）、`SpotCard.vue`、`SpotFormModal.vue`；
+  子項目：`SpotItems.vue`（卡片裡的子清單，各行程各自一組 Sortable）、`ItemFormModal.vue`、`src/composables/useExpanded.ts`（展開狀態）；
+  行程的旅費：`SpotExpensesModal.vue`（依 `expenses.spot_id`，從行程記帳以 `ExpenseFormModal` 的 `preset` 帶入行程與日期）
 - 旅費：`src/views/ExpensesView.vue`、`src/components/ExpenseFormModal.vue`、`TransferModal.vue`
-- `supabase/schema.sql`：資料表、RLS、`current_trip_id()`、`bump_version()`、`create_trip()`／`regenerate_trip_token()`／`save_expense()`
+- `supabase/schema.sql`：資料表、RLS、`current_trip_id()`、`bump_version()`、`create_trip()`／`regenerate_trip_token()`／`save_expense()`、帳號函式 `account_*`
 - `.github/workflows/deploy.yml`：測試、打包、部署 Pages；`keepalive.yml`：每日不帶 token GET trips，預期 `[]`
 - `vite.config.ts`：`base` 依 `VITE_BASE`／`GITHUB_REPOSITORY` 決定、PWA manifest
 - `.claude/launch.json`：瀏覽器預覽設定 `trip-planner`（跑 `npm run dev`，port 5173）
@@ -66,6 +71,8 @@ npm run build        # vue-tsc 型別檢查 + vite build 到 dist/
 - 行程類型與預約狀態（預設「還沒」、「無需」不顯示、口袋名單不算待辦）→ README「類型與預約狀態」、`src/lib/category.ts`
 - 要收／要付（全體加總必為 0）與最少轉帳 → README「要收／要付與轉帳建議」、`netBalances`／`simplifyDebts`
 - 同時編輯的行為 → README「同時編輯」
+- 子項目（一個行程底下多間店）→ README「功能」的行程段落
+- 帳號（選用、只保管連結、換發 token 後帳號裡的舊連結失效、忘記密碼的重設 SQL）→ README「帳號」
 - 改了上述任一規則，README 對應段落要同步更新
 
 ## 部署
