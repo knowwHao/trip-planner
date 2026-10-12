@@ -1,0 +1,34 @@
+name: Supabase keepalive
+
+# Supabase 免費專案連續一週沒有請求會被暫停，每天打一次 API 保持活躍
+on:
+  schedule:
+    - cron: '41 3 * * *'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  ping:
+    runs-on: ubuntu-latest
+    steps:
+      # 不帶旅程 token：RLS 讓結果固定是空陣列，請求本身就算一次活動；回傳非空代表 RLS 失守
+      - name: Query trips without trip token
+        env:
+          SUPABASE_URL: ${{ secrets.VITE_SUPABASE_URL }}
+          SUPABASE_ANON_KEY: ${{ secrets.VITE_SUPABASE_ANON_KEY }}
+        run: |
+          if [ -z "$SUPABASE_URL" ] || [ -z "$SUPABASE_ANON_KEY" ]; then
+            echo "Supabase secrets 未設定，略過"
+            exit 0
+          fi
+          body=$(curl -sS -w '\n%{http_code}' \
+            "$SUPABASE_URL/rest/v1/trips?select=id&limit=1" \
+            -H "apikey: $SUPABASE_ANON_KEY" \
+            -H "Authorization: Bearer $SUPABASE_ANON_KEY")
+          status=$(printf '%s' "$body" | tail -n 1)
+          data=$(printf '%s' "$body" | sed '$d')
+          echo "HTTP $status $data"
+          test "$status" = 200
+          test "$data" = "[]"
