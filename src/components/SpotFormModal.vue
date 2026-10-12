@@ -3,7 +3,7 @@ import { computed, reactive, ref, watch } from 'vue'
 import { Navigation, Trash2 } from 'lucide-vue-next'
 import ModalSheet from './ModalSheet.vue'
 import StaleNotice from './StaleNotice.vue'
-import type { Spot, SpotInput } from '@/types'
+import type { BookingStatus, Spot, SpotCategory, SpotInput } from '@/types'
 import { repo } from '@/data'
 import { useTripStore } from '@/stores/trip'
 import { saveWithConflict } from '@/composables/useConflict'
@@ -13,6 +13,7 @@ import { dayDate, formatDate, formatTime } from '@/lib/format'
 import { googleMapsUrl, safeUrl } from '@/lib/maps'
 import { formatMoney, MAX_AMOUNT, parseAmount, toTwd } from '@/lib/money'
 import { keyAfter } from '@/lib/order'
+import { bookingForCategory, bookingOptions, CATEGORIES, defaultBooking } from '@/lib/category'
 
 const props = defineProps<{
   open: boolean
@@ -26,14 +27,27 @@ const emit = defineEmits<{ close: [] }>()
 const store = useTripStore()
 const trip = computed(() => store.trip!)
 
-const form = reactive({ title: '', day: '' as string, time: '', address: '', mapUrl: '', cost: '', note: '' })
+const form = reactive({
+  category: 'sight' as SpotCategory,
+  booking: null as BookingStatus | null,
+  title: '',
+  day: '' as string,
+  time: '',
+  address: '',
+  mapUrl: '',
+  cost: '',
+  note: '',
+})
 const base = ref<Spot | null>(null)
 const touched = ref(false)
 const saving = ref(false)
 
 function fill(s: Spot | null | undefined) {
   base.value = s ?? null
+  const category = s?.category ?? 'sight'
   Object.assign(form, {
+    category,
+    booking: s ? s.booking : defaultBooking(category),
     title: s?.title ?? '',
     day: String(s ? (s.day ?? '') : (props.day ?? '')),
     time: formatTime(s?.start_time ?? null),
@@ -60,13 +74,29 @@ const dayOptions = computed(() =>
 )
 
 const cost = computed(() => parseAmount(form.cost, trip.value.currency))
+const statusOptions = computed(() => bookingOptions(form.category))
+
+const PLACEHOLDERS: Record<SpotCategory, string> = {
+  sight: '例如：淺草寺',
+  food: '例如：一蘭拉麵 上野店',
+  shop: '例如：銀座三越',
+  activity: '例如：和服體驗',
+  transport: '例如：新幹線 東京 → 京都',
+  stay: '例如：上野站前飯店',
+  other: '',
+}
+
+function pickCategory(c: SpotCategory) {
+  form.category = c
+  form.booking = bookingForCategory(c, form.booking)
+}
 const preview = computed(() =>
   googleMapsUrl({ map_url: form.mapUrl, address: form.address, title: form.title }),
 )
 
 const errors = computed(() => {
   const e: Record<string, string> = {}
-  if (!form.title.trim()) e.title = '請輸入景點名稱'
+  if (!form.title.trim()) e.title = '請輸入名稱'
   else if ([...form.title.trim()].length > 80) e.title = '最多 80 個字'
   if (form.mapUrl.trim() && !safeUrl(form.mapUrl)) e.mapUrl = '請貼上 http 或 https 開頭的連結'
   if (cost.value !== null && !(cost.value >= 0 && cost.value <= MAX_AMOUNT)) e.cost = '金額格式不對'
@@ -85,6 +115,8 @@ async function submit() {
   if (Object.keys(errors.value).length) return
   const day = form.day ? Number(form.day) : null
   const content = {
+    category: form.category,
+    booking: form.booking,
     title: form.title.trim(),
     start_time: form.time || null,
     address: form.address.trim(),
@@ -104,7 +136,7 @@ async function submit() {
     // 換天時排到那一天的最後面；沒換天就不動排序
     const moved = day !== (latest.value?.day ?? target.day)
     const patch = moved ? { ...content, day, sort_key: keyAfter(lastKey(day)) } : content
-    const outcome = await saveWithConflict('個景點', (useLatest) =>
+    const outcome = await saveWithConflict('個行程', (useLatest) =>
       store.mutate(() => repo.updateSpot(target.id, useLatest ? (latest.value?.version ?? target.version) : target.version, patch)),
     )
     if (outcome === 'saved' || outcome === 'gone') emit('close')
@@ -131,12 +163,50 @@ async function remove() {
 </script>
 
 <template>
-  <ModalSheet :open="open" :title="base ? '編輯景點' : '新增景點'" @close="emit('close')">
+  <ModalSheet :open="open" :title="base ? '編輯行程' : '新增行程'" @close="emit('close')">
     <StaleNotice v-if="stale || gone" :gone="gone" @reload="fill(latest)" />
     <form id="spot-form" class="space-y-4" novalidate @submit.prevent="submit">
+      <fieldset>
+        <legend class="label">類型</legend>
+        <div class="grid grid-cols-4 gap-1.5" role="radiogroup" aria-label="類型">
+          <button
+            v-for="c in CATEGORIES"
+            :key="c.value"
+            type="button"
+            role="radio"
+            :aria-checked="form.category === c.value"
+            class="flex flex-col items-center gap-0.5 rounded-2xl border py-1.5 text-xs font-semibold transition"
+            :class="
+              form.category === c.value
+                ? 'border-sea-400 bg-sea-100 text-ink-900 dark:bg-sea-400/15 dark:text-white'
+                : 'border-ink-200 text-ink-500 hover:border-sea-400 dark:border-ink-700 dark:text-ink-300'
+            "
+            @click="pickCategory(c.value)"
+          >
+            <span class="text-lg leading-6" aria-hidden="true">{{ c.emoji }}</span>{{ c.label }}
+          </button>
+        </div>
+      </fieldset>
+      <fieldset v-if="statusOptions.length">
+        <legend class="label">預約狀態</legend>
+        <div class="grid rounded-2xl bg-ink-100 p-1 dark:bg-ink-800" :class="statusOptions.length === 3 ? 'grid-cols-3' : 'grid-cols-2'" role="radiogroup" aria-label="預約狀態">
+          <button
+            v-for="o in statusOptions"
+            :key="o.value"
+            type="button"
+            role="radio"
+            :aria-checked="form.booking === o.value"
+            class="rounded-xl py-2 text-sm font-bold transition"
+            :class="form.booking === o.value ? 'bg-white text-ink-900 shadow-soft dark:bg-ink-600 dark:text-white' : 'text-ink-400'"
+            @click="form.booking = o.value"
+          >
+            {{ o.label }}
+          </button>
+        </div>
+      </fieldset>
       <div>
-        <label class="label" for="spot-title">景點名稱</label>
-        <input id="spot-title" v-model="form.title" class="input" maxlength="80" placeholder="例如：淺草寺" autocomplete="off" />
+        <label class="label" for="spot-title">名稱</label>
+        <input id="spot-title" v-model="form.title" class="input" maxlength="80" :placeholder="PLACEHOLDERS[form.category]" autocomplete="off" />
         <p v-if="touched && errors.title" class="mt-1 text-xs text-rose-500">{{ errors.title }}</p>
       </div>
       <div class="grid grid-cols-[minmax(0,1fr)_7.5rem] gap-3">
@@ -177,9 +247,9 @@ async function remove() {
       </div>
       <div>
         <label class="label" for="spot-note">備註（選填）</label>
-        <textarea id="spot-note" v-model="form.note" class="input min-h-24" maxlength="2000" placeholder="營業時間、要預約、交通方式…" />
+        <textarea id="spot-note" v-model="form.note" class="input min-h-24" maxlength="2000" placeholder="營業時間、訂位代號、交通方式…" />
       </div>
-      <button v-if="base" type="button" class="btn-ghost -ml-2 text-rose-500" @click="remove"><Trash2 class="size-4" />刪除這個景點</button>
+      <button v-if="base" type="button" class="btn-ghost -ml-2 text-rose-500" @click="remove"><Trash2 class="size-4" />刪除</button>
     </form>
     <template #footer>
       <button type="button" class="btn-outline flex-1" @click="emit('close')">取消</button>

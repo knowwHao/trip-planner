@@ -12,14 +12,14 @@ import { useTripStore } from '@/stores/trip'
 import { confirmDialog } from '@/composables/useConfirm'
 import { errorMessage, toast } from '@/composables/useToast'
 import { formatDate } from '@/lib/format'
-import { formatMoney, formatRate, toTwd } from '@/lib/money'
-import { groupShares } from '@/lib/split'
+import { formatMoney, formatRate } from '@/lib/money'
+import { expenseTwd, groupShares } from '@/lib/split'
 
 const store = useTripStore()
 const trip = computed(() => store.trip!)
 const data = computed(() => store.data!)
 
-const total = computed(() => data.value.expenses.reduce((s, e) => s + toTwd(e.amount, e.currency, trip.value.fx_rate), 0))
+const total = computed(() => data.value.expenses.reduce((s, e) => s + expenseTwd(e, trip.value), 0))
 const sharesByExpense = computed(() => groupShares(data.value.shares))
 
 /** 依日期分組，新的在前；沒指定日期的放最後 */
@@ -158,7 +158,7 @@ async function removeTransfer(id: Id, label: string) {
               </tbody>
             </table>
           </div>
-          <p class="mt-3 text-xs leading-relaxed text-ink-400">「要收／要付」已扣掉記下的轉帳；外幣都用上面的匯率換成新台幣。</p>
+          <p class="mt-3 text-xs leading-relaxed text-ink-400">「要收／要付」已扣掉記下的轉帳；外幣用上面的匯率換成新台幣，有填實際扣款的照實際扣款算。</p>
         </section>
       </div>
 
@@ -186,7 +186,7 @@ async function removeTransfer(id: Id, label: string) {
               </div>
               <div class="num shrink-0 text-right">
                 <p class="font-bold">{{ formatMoney(e.amount, e.currency) }}</p>
-                <p v-if="e.currency !== 'TWD'" class="text-xs text-ink-400">≈ {{ formatMoney(toTwd(e.amount, e.currency, trip.fx_rate)) }}</p>
+                <p v-if="e.currency !== 'TWD'" class="text-xs text-ink-400">{{ e.twd_amount !== null ? '實扣' : '≈' }} {{ formatMoney(expenseTwd(e, trip)) }}</p>
               </div>
             </button>
           </div>

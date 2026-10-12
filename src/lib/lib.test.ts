@@ -1,8 +1,9 @@
 import { describe, expect, it } from 'vitest'
 import { googleMapsUrl, safeUrl } from './maps'
 import { evenKeys, keyBetween } from './order'
-import { currencyDigits, formatMoney, parseAmount, toTwd } from './money'
+import { currencyDigits, formatMoney, parseAmount, parseSum, toTwd } from './money'
 import { addDays, dayDate, formatRange, tripDayCount } from './format'
+import { bookingForCategory, bookingLabel, defaultBooking, nextBooking } from './category'
 
 describe('maps', () => {
   it('只接受 http(s) 連結', () => {
@@ -49,6 +50,16 @@ describe('money', () => {
     expect(parseAmount('1e3', 'USD')).toBeNaN()
   })
 
+  it('可以輸入加法', () => {
+    expect(parseSum('1200+3400 + 980', 'JPY')).toBe(5580)
+    expect(parseSum('12.5+0.25', 'USD')).toBe(12.75)
+    expect(parseSum('0.1+0.2', 'USD')).toBe(0.3)
+    expect(parseSum('', 'JPY')).toBeNull()
+    expect(parseSum('1200+', 'JPY')).toBeNaN()
+    expect(parseSum('1200-300', 'JPY')).toBeNaN()
+    expect(parseSum('1.5+1', 'JPY')).toBeNaN()
+  })
+
   it('換算與顯示', () => {
     expect(toTwd(1000, 'JPY', 0.2135)).toBe(214)
     expect(toTwd(99.6, 'TWD', 5)).toBe(100)
@@ -66,5 +77,34 @@ describe('format', () => {
     expect(addDays('2026-02-28', 1)).toBe('2026-03-01')
     expect(formatRange('2026-12-30', '2027-01-02')).toBe('2026/12/30（三） – 2027/1/2（六）')
     expect(formatRange('2026-11-01', '2026-11-03')).toBe('2026/11/1（日） – 11/3（二）')
+  })
+})
+
+describe('category', () => {
+  it('預約狀態的文字依類型而定', () => {
+    expect(bookingLabel('food', 'todo')).toBe('未訂位')
+    expect(bookingLabel('sight', 'done')).toBe('已買票')
+    expect(bookingLabel('shop', 'todo')).toBeNull()
+    expect(bookingLabel('food', null)).toBeNull()
+  })
+
+  it('新增時有預約狀態的類型預設「還沒」', () => {
+    expect(defaultBooking('food')).toBe('todo')
+    expect(defaultBooking('shop')).toBeNull()
+  })
+
+  it('換類型時沿用狀態，新類型不支援就換成預設', () => {
+    expect(bookingForCategory('sight', 'done')).toBe('done')
+    expect(bookingForCategory('stay', 'none')).toBe('todo')
+    expect(bookingForCategory('shop', 'done')).toBeNull()
+    expect(bookingForCategory('food', null)).toBe('todo')
+  })
+
+  it('點標籤只在還沒與已完成之間切換，沒設定的先變成還沒', () => {
+    expect(nextBooking('food', 'todo')).toBe('done')
+    expect(nextBooking('food', 'done')).toBe('todo')
+    expect(nextBooking('food', null)).toBe('todo')
+    expect(nextBooking('stay', 'done')).toBe('todo')
+    expect(nextBooking('shop', null)).toBeNull()
   })
 })

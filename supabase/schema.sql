@@ -132,6 +132,35 @@ create table if not exists public.transfers (
   foreign key (to_id, trip_id) references public.participants (id, trip_id)
 );
 
+-- ---------- 後來加的欄位 ----------
+-- 只寫在這裡、不寫進上面的 create table：新資料庫與舊資料庫升級都走同一條路
+
+-- 行程項目的類型；舊資料一律當作景點
+alter table public.spots
+  add column if not exists category text not null default 'sight'
+    check (category in ('sight', 'food', 'shop', 'activity', 'transport', 'stay', 'other'));
+-- 預約狀態：done 已訂／已買、todo 還沒、none 不需要；null 是沒設定，畫面文字依類型而定
+alter table public.spots
+  add column if not exists booking text check (booking in ('done', 'todo', 'none'));
+
+-- 外幣旅費的實際扣款（新台幣，例如信用卡帳單金額），有填時這筆用它換算而不用旅程匯率
+alter table public.expenses
+  add column if not exists twd_amount int check (twd_amount > 0 and twd_amount < 100000000);
+
+do $$
+begin
+  -- 購物與其他沒有預約狀態，住宿一定要訂房所以沒有「不需要」
+  if not exists (select 1 from pg_constraint where conname = 'spots_booking_fits_category') then
+    alter table public.spots add constraint spots_booking_fits_category check (
+      (category not in ('shop', 'other') or booking is null) and (category <> 'stay' or booking is distinct from 'none'));
+  end if;
+  -- 新台幣的旅費本來就是實際金額，不需要另外填
+  if not exists (select 1 from pg_constraint where conname = 'expenses_twd_amount_foreign_only') then
+    alter table public.expenses add constraint expenses_twd_amount_foreign_only check (twd_amount is null or currency <> 'TWD');
+  end if;
+end;
+$$;
+
 create index if not exists participants_trip_idx on public.participants (trip_id);
 create index if not exists spots_trip_idx on public.spots (trip_id);
 create index if not exists expenses_trip_idx on public.expenses (trip_id);
@@ -316,17 +345,17 @@ begin
   end if;
 
   if v_id is null then
-    insert into public.expenses (trip_id, title, amount, currency, payer_id, split_mode, spent_on, spot_id, note)
+    insert into public.expenses (trip_id, title, amount, currency, payer_id, split_mode, spent_on, spot_id, note, twd_amount)
     values (v_trip, btrim(p_expense ->> 'title'), v_amount, v_currency, (p_expense ->> 'payer_id')::uuid, v_mode,
             nullif(p_expense ->> 'spent_on', '')::date, nullif(p_expense ->> 'spot_id', '')::uuid,
-            coalesce(p_expense ->> 'note', ''))
+            coalesce(p_expense ->> 'note', ''), (p_expense ->> 'twd_amount')::int)
     returning id into v_id;
   else
     update public.expenses
        set title = btrim(p_expense ->> 'title'), amount = v_amount, currency = v_currency,
            payer_id = (p_expense ->> 'payer_id')::uuid, split_mode = v_mode,
            spent_on = nullif(p_expense ->> 'spent_on', '')::date, spot_id = nullif(p_expense ->> 'spot_id', '')::uuid,
-           note = coalesce(p_expense ->> 'note', '')
+           note = coalesce(p_expense ->> 'note', ''), twd_amount = (p_expense ->> 'twd_amount')::int
      where id = v_id and version = (p_expense ->> 'version')::int
     returning id into v_found;
     if v_found is null then
