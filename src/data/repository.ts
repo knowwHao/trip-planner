@@ -4,6 +4,7 @@ import type {
   ExpenseInput,
   Id,
   ShareInput,
+  PhotoData,
   PinResult,
   ProxyInput,
   Spot,
@@ -17,6 +18,11 @@ import type {
   TripInput,
   TripPatch,
   TripSummary,
+  WishItem,
+  WishItemInput,
+  WishItemPatch,
+  WishPhoto,
+  WishStatus,
 } from '@/types'
 
 export type RepoMode = 'demo' | 'supabase'
@@ -58,6 +64,17 @@ export class AccountSessionError extends Error {
   constructor() {
     super('登入已失效，請重新登入')
     this.name = 'AccountSessionError'
+  }
+}
+
+/** 與 schema.sql 的 limit_wish_photos 一致 */
+export const MAX_WISH_PHOTOS = 2
+
+/** 一個代購項目的照片已經到上限 */
+export class TooManyPhotosError extends Error {
+  constructor() {
+    super(`一個項目最多 ${MAX_WISH_PHOTOS} 張照片`)
+    this.name = 'TooManyPhotosError'
   }
 }
 
@@ -138,6 +155,20 @@ export interface TripRepository {
 
   createTransfer(input: TransferInput): Promise<void>
   deleteTransfer(id: Id): Promise<void>
+
+  /** 以下是自己的代購清單 */
+  createWishItem(input: WishItemInput): Promise<WishItem>
+  /** 版本不符丟 ConflictError */
+  updateWishItem(id: Id, version: number, patch: WishItemPatch): Promise<void>
+  /** 打勾與排地點都不檢查版本 */
+  setWishStatus(id: Id, status: WishStatus): Promise<void>
+  setWishSpot(ids: Id[], spotId: Id | null): Promise<void>
+  deleteWishItem(id: Id): Promise<void>
+  /** 超過上限丟 TooManyPhotosError */
+  addWishPhoto(itemId: Id, photo: PhotoData): Promise<WishPhoto>
+  deleteWishPhoto(id: Id): Promise<void>
+  /** 照片不會改，讀過的可以一直快取 */
+  getWishPhoto(id: Id, size: 'thumb' | 'full'): Promise<string>
 
   /** 收到其他人的異動通知時呼叫 onChange；live 回報即時連線狀態；回傳取消訂閱的函式 */
   subscribe(onChange: () => void, onLive: (live: boolean) => void): () => void

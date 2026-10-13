@@ -18,6 +18,7 @@ export const router = createRouter({
       children: [
         { path: '', component: () => import('@/views/ItineraryView.vue'), meta: { title: '行程' } },
         { path: 'expenses', component: () => import('@/views/ExpensesView.vue'), meta: { title: '旅費' } },
+        { path: 'shopping', component: () => import('@/views/WishListView.vue'), meta: { title: '代購' } },
         { path: 'settings', component: () => import('@/views/TripSettingsView.vue'), meta: { title: '設定' } },
       ],
     },

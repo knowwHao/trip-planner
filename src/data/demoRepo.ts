@@ -7,6 +7,7 @@ import type {
   ExpenseShare,
   Id,
   Participant,
+  PhotoData,
   PinResult,
   ProxyInput,
   ShareInput,
@@ -23,6 +24,11 @@ import type {
   TripInput,
   TripPatch,
   TripSummary,
+  WishItem,
+  WishItemInput,
+  WishItemPatch,
+  WishPhoto,
+  WishStatus,
 } from '@/types'
 import { toMinor } from '@/lib/money'
 import {
@@ -32,6 +38,8 @@ import {
   LastMemberError,
   NameTakenError,
   NoAccessError,
+  MAX_WISH_PHOTOS,
+  TooManyPhotosError,
   type ItemMove,
   type SpotMove,
   type TripRepository,
@@ -40,11 +48,14 @@ import { isValidPin, PIN_LOCK_MINUTES, PIN_MAX_ATTEMPTS } from '@/lib/pin'
 import { RowMissingError } from './writeCheck'
 import { channelName } from './realtime'
 import { randomId, randomKey, seedDemoTrip } from './demoSeed'
+import { deletePhotos, getPhoto, putPhoto } from './demoPhotos'
 
 const DB_KEY = 'trip-demo-db-v1'
 
 type StoredShare = ExpenseShare & { trip_id: Id }
 type StoredProxy = ExpenseProxy & { trip_id: Id; sort_order: number }
+/** 圖片本身放在 IndexedDB（demoPhotos.ts），這裡只存清單 */
+type StoredPhoto = WishPhoto & { trip_id: Id; owner_id: Id }
 
 /** Demo 只存在這個瀏覽器，密碼直接存明碼；真正的資料庫存的是加鹽雜湊 */
 interface DemoAccount {
@@ -64,12 +75,14 @@ export interface DemoDb {
   expenses: Expense[]
   shares: StoredShare[]
   proxies: StoredProxy[]
+  wishItems: WishItem[]
+  wishPhotos: StoredPhoto[]
   transfers: Transfer[]
   accounts: DemoAccount[]
 }
 
 export function emptyDb(): DemoDb {
-  return { trips: [], participants: [], spots: [], items: [], expenses: [], shares: [], proxies: [], transfers: [], accounts: [] }
+  return { trips: [], participants: [], spots: [], items: [], expenses: [], shares: [], proxies: [], transfers: [], accounts: [], wishItems: [], wishPhotos: [] }
 }
 
 const NO_FLIGHT = { airline: '', flight_no: '', dep_airport: '', arr_airport: '', arr_time: null, arr_day_offset: 0 }
@@ -96,6 +109,9 @@ function readStorage(): DemoDb | null {
     db.items ??= []
     db.accounts ??= []
     db.proxies ??= []
+    for (const p of db.proxies) p.wish_item_id ??= null
+    db.wishItems ??= []
+    db.wishPhotos ??= []
     // 與 schema.sql 一樣拿掉旅程連結；舊的示範旅程沒有成員，誰都看不到
     for (const t of db.trips) Reflect.deleteProperty(t, 'token')
     for (const p of db.participants) p.account_id ??= null
@@ -172,6 +188,7 @@ export class DemoRepo implements TripRepository {
         return { id: a.id, name: a.name }
       })
     const { trip, data } = seedDemoTrip({ id: acc.id, name: acc.name }, others)
+    this.db.wishItems.push(...data.wishItems)
     this.db.trips.push(trip)
     this.db.participants.push(...data.participants)
     this.db.spots.push(...data.spots)
@@ -245,6 +262,14 @@ export class DemoRepo implements TripRepository {
         .sort((a, b) => a.sort_order - b.sort_order)
         .map(({ trip_id: _t, sort_order: _o, ...p }) => p),
       transfers: this.ofTrip(this.db.transfers, id),
+      // 與 RLS 相同：代購清單只有自己的
+      wishItems: this.ofTrip(this.db.wishItems, id)
+        .filter((w) => w.owner_id === this.session?.id)
+        .sort((a, b) => a.sort_key - b.sort_key),
+      wishPhotos: this.ofTrip(this.db.wishPhotos, id)
+        .filter((p) => p.owner_id === this.session?.id)
+        .sort((a, b) => a.sort_order - b.sort_order)
+        .map(({ trip_id: _t, owner_id: _o, ...p }) => p),
     })
   }
 
@@ -270,6 +295,9 @@ export class DemoRepo implements TripRepository {
     this.db.shares = keep(this.db.shares)
     this.db.proxies = keep(this.db.proxies)
     this.db.transfers = keep(this.db.transfers)
+    this.db.wishItems = keep(this.db.wishItems)
+    void deletePhotos(this.db.wishPhotos.filter((p) => p.trip_id === id).map((p) => p.id))
+    this.db.wishPhotos = keep(this.db.wishPhotos)
     this.commit()
   }
 
@@ -355,6 +383,7 @@ export class DemoRepo implements TripRepository {
     this.db.spots = this.db.spots.filter((s) => !(s.id === id && s.trip_id === trip.id))
     this.db.items = this.db.items.filter((i) => i.spot_id !== id)
     for (const e of this.db.expenses) if (e.spot_id === id) e.spot_id = null
+    for (const w of this.db.wishItems) if (w.spot_id === id) w.spot_id = null
     this.commit()
   }
 
@@ -426,6 +455,10 @@ export class DemoRepo implements TripRepository {
     if (!ids.has(input.payer_id) || shares.some((s) => !ids.has(s.participant_id))) {
       throw new Error('有旅伴或景點剛被別人刪除，請重新整理後再試')
     }
+    // 與 save_expense() 相同：代購清單項目要是自己的，或這筆原本就連著的（別人改這筆時原樣保留）
+    const keepWish = new Set(this.db.proxies.filter((p) => input.id && p.expense_id === input.id && p.wish_item_id).map((p) => p.wish_item_id))
+    const mine = (wid: Id) => this.db.wishItems.some((w) => w.id === wid && w.trip_id === trip.id && w.owner_id === this.session?.id)
+    if (proxies.some((p) => p.wish_item_id && !keepWish.has(p.wish_item_id) && !mine(p.wish_item_id))) throw new RowMissingError()
     const { id: inputId, version, ...fields } = input
     let id: Id
     if (inputId) {
@@ -449,8 +482,20 @@ export class DemoRepo implements TripRepository {
     }
     this.db.proxies = this.db.proxies.filter((p) => p.expense_id !== id)
     proxies.forEach((p, i) =>
-      this.db.proxies.push({ id: randomId(), expense_id: id, trip_id: trip.id, name: p.name.trim(), amount: p.amount, sort_order: i }),
+      this.db.proxies.push({
+        id: randomId(),
+        expense_id: id,
+        trip_id: trip.id,
+        name: p.name.trim(),
+        amount: p.amount,
+        sort_order: i,
+        wish_item_id: p.wish_item_id ?? null,
+      }),
     )
+    for (const p of proxies) {
+      const w = p.wish_item_id ? this.db.wishItems.find((x) => x.id === p.wish_item_id && x.owner_id === this.session?.id) : undefined
+      if (w) w.status = 'bought'
+    }
     this.commit()
     return id
   }
@@ -525,6 +570,86 @@ export class DemoRepo implements TripRepository {
     acc.key = randomKey()
     this.commit()
     return { ok: true, session: { id: acc.id, name: acc.name, key: acc.key } }
+  }
+
+  /** 模擬代購清單的 RLS：要是成員，而且是自己的 */
+  private findWish(id: Id) {
+    const trip = this.guard()
+    const me = this.session!.id
+    return this.db.wishItems.find((w) => w.id === id && w.trip_id === trip.id && w.owner_id === me)
+  }
+
+  async createWishItem(input: WishItemInput) {
+    const trip = this.guard()
+    const t = now()
+    const item: WishItem = { ...input, id: randomId(), trip_id: trip.id, owner_id: this.session!.id, version: 1, created_at: t, updated_at: t }
+    this.db.wishItems.push(item)
+    this.commit()
+    return clone(item)
+  }
+
+  async updateWishItem(id: Id, version: number, patch: WishItemPatch) {
+    const w = this.findWish(id)
+    if (!w) throw new RowMissingError()
+    if (w.version !== version) throw new ConflictError()
+    const changed = Object.entries(patch).some(([k, v]) => w[k as keyof WishItem] !== v)
+    Object.assign(w, patch, { updated_at: now() })
+    if (changed) w.version++
+    this.commit()
+  }
+
+  async setWishStatus(id: Id, status: WishStatus) {
+    const w = this.findWish(id)
+    if (!w) throw new RowMissingError()
+    w.status = status
+    this.commit()
+  }
+
+  async setWishSpot(ids: Id[], spotId: Id | null) {
+    // 與 moveSpots 一樣只能 guard 一次，否則重讀 localStorage 會丟掉前面的修改
+    const trip = this.guard()
+    const me = this.session!.id
+    for (const w of this.db.wishItems) if (ids.includes(w.id) && w.trip_id === trip.id && w.owner_id === me) w.spot_id = spotId
+    this.commit()
+  }
+
+  async deleteWishItem(id: Id) {
+    if (!this.findWish(id)) return
+    const photos = this.db.wishPhotos.filter((p) => p.item_id === id)
+    this.db.wishItems = this.db.wishItems.filter((w) => w.id !== id)
+    this.db.wishPhotos = this.db.wishPhotos.filter((p) => p.item_id !== id)
+    for (const p of this.db.proxies) if (p.wish_item_id === id) p.wish_item_id = null
+    this.commit()
+    await deletePhotos(photos.map((p) => p.id))
+  }
+
+  async addWishPhoto(itemId: Id, photo: PhotoData) {
+    const w = this.findWish(itemId)
+    if (!w) throw new RowMissingError()
+    if (this.db.wishPhotos.filter((p) => p.item_id === itemId).length >= MAX_WISH_PHOTOS) throw new TooManyPhotosError()
+    const row: StoredPhoto = { id: randomId(), item_id: itemId, sort_order: 0, trip_id: w.trip_id, owner_id: w.owner_id }
+    await putPhoto(row.id, photo)
+    this.db.wishPhotos.push(row)
+    this.commit()
+    return { id: row.id, item_id: itemId, sort_order: 0 }
+  }
+
+  async deleteWishPhoto(id: Id) {
+    const trip = this.guard()
+    const me = this.session!.id
+    if (!this.db.wishPhotos.some((p) => p.id === id && p.trip_id === trip.id && p.owner_id === me)) return
+    this.db.wishPhotos = this.db.wishPhotos.filter((p) => p.id !== id)
+    this.commit()
+    await deletePhotos([id])
+  }
+
+  async getWishPhoto(id: Id, size: 'thumb' | 'full') {
+    const trip = this.guard()
+    const me = this.session!.id
+    if (!this.db.wishPhotos.some((p) => p.id === id && p.trip_id === trip.id && p.owner_id === me)) throw new RowMissingError()
+    const data = await getPhoto(id)
+    if (!data) throw new RowMissingError()
+    return size === 'thumb' ? data.thumb : data.full
   }
 
   private bc: BroadcastChannel | null = null

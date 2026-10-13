@@ -1,10 +1,10 @@
 <script setup lang="ts">
 import { computed, reactive, ref, watch } from 'vue'
-import { Plus, Trash2, X } from 'lucide-vue-next'
+import { Plus, ShoppingBag, Trash2, X } from 'lucide-vue-next'
 import ModalSheet from './ModalSheet.vue'
 import StaleNotice from './StaleNotice.vue'
 import ParticipantAvatar from './ParticipantAvatar.vue'
-import type { Expense, ExpenseInput, Id, ProxyInput, ShareInput, SplitMode } from '@/types'
+import type { Expense, ExpenseInput, Id, ProxyInput, ShareInput, SplitMode, WishItem } from '@/types'
 import { repo } from '@/data'
 import { useTripStore } from '@/stores/trip'
 import { saveWithConflict } from '@/composables/useConflict'
@@ -13,12 +13,19 @@ import { errorMessage, toast } from '@/composables/useToast'
 import { dayDate, formatDate, todayYmd } from '@/lib/format'
 import { currencyDigits, currencyInfo, formatMoney, formatRate, fromMinor, MAX_AMOUNT, parseAmount, parseSum, toMinor, toTwd } from '@/lib/money'
 import { customRemaining, expenseDues } from '@/lib/split'
+import { wishLabel } from '@/lib/wish'
 
 const props = defineProps<{
   open: boolean
   expense?: Expense | null
   /** 從行程記一筆時帶入的預設值 */
-  preset?: { spot_id: Id; spent_on: string | null; title: string } | null
+  preset?: {
+    spot_id?: Id | null
+    spent_on?: string | null
+    title?: string
+    /** 從代購清單記帳時要帶進代購列的項目 */
+    wish?: Id[]
+  } | null
 }>()
 const emit = defineEmits<{ close: [] }>()
 
@@ -42,8 +49,15 @@ const form = reactive({
   checked: [] as Id[],
   custom: {} as Record<Id, string>,
   /** 代購：幫不是旅伴的人買的部分 */
-  proxies: [] as { name: string; amount: string }[],
+  proxies: [] as ProxyRow[],
 })
+/** 代購列；wishItemId 是從代購清單帶進來的項目 */
+interface ProxyRow {
+  name: string
+  amount: string
+  wishItemId: Id | null
+}
+
 const base = ref<Expense | null>(null)
 const touched = ref(false)
 const saving = ref(false)
@@ -57,20 +71,25 @@ function fill(e: Expense | null | undefined) {
   base.value = e ?? null
   const shares = e ? (store.data?.shares ?? []).filter((s) => s.expense_id === e.id) : []
   const proxies = e ? (store.data?.proxies ?? []).filter((x) => x.expense_id === e.id) : []
+  const wishes = e ? [] : (props.preset?.wish ?? []).flatMap((id) => store.wishItems.filter((w) => w.id === id))
   involved.value = new Set(e ? [e.payer_id, ...shares.map((s) => s.participant_id)] : [])
   Object.assign(form, {
-    title: e?.title ?? props.preset?.title ?? '',
+    title: e?.title ?? props.preset?.title ?? (wishes.length ? `代購：${wishes.map((w) => w.title).join('、')}`.slice(0, 60) : ''),
     amount: e ? String(e.amount) : '',
     currency: e?.currency ?? trip.value.currency,
     charged: e?.twd_amount != null ? String(e.twd_amount) : '',
-    payer: e?.payer_id ?? people.value[0]?.id ?? '',
+    payer: e?.payer_id ?? store.me?.id ?? people.value[0]?.id ?? '',
     date: e ? (e.spent_on ?? '') : (props.preset?.spent_on ?? defaultDate()),
     spot: e?.spot_id ?? props.preset?.spot_id ?? '',
     note: e?.note ?? '',
-    mode: e?.split_mode ?? 'even',
+    // 從代購清單記的多半整筆都是代購或各買各的，用指定金額比較好分
+    mode: e?.split_mode ?? (wishes.length ? 'custom' : 'even'),
     checked: e ? shares.map((s) => s.participant_id) : people.value.map((p) => p.id),
     custom: Object.fromEntries(shares.filter((s) => s.amount !== null).map((s) => [s.participant_id, String(s.amount)])),
-    proxies: proxies.map((x) => ({ name: x.name, amount: String(x.amount) })),
+    proxies: [
+      ...proxies.map((x) => ({ name: x.name, amount: String(x.amount), wishItemId: x.wish_item_id })),
+      ...wishes.map((w) => ({ name: w.recipient.trim(), amount: '', wishItemId: w.id })),
+    ],
   })
   touched.value = false
 }
@@ -95,8 +114,26 @@ const chargedRate = computed(() => (charged.value && amount.value && amount.valu
 const proxyValues = computed(() => form.proxies.map((x) => parseSum(x.amount, form.currency)))
 // 名字和金額都空著的代購列當作沒有
 const proxies = computed<ProxyInput[]>(() =>
-  form.proxies.flatMap((x, i) => (x.name.trim() || x.amount.trim() ? [{ name: x.name.trim(), amount: proxyValues.value[i] ?? NaN }] : [])),
+  form.proxies.flatMap((x, i) =>
+    x.name.trim() || x.amount.trim() || x.wishItemId ? [{ name: x.name.trim(), amount: proxyValues.value[i] ?? NaN, wish_item_id: x.wishItemId }] : [],
+  ),
 )
+
+/** 代購列對應的清單項目（只有自己的看得到），顯示品項用 */
+const wishById = computed(() => new Map(store.wishItems.map((w) => [w.id, w])))
+
+// 從行程記帳時，列出排在這個行程、還沒記過帳的自己的代購項目，勾了就變成代購列
+const spotWishes = computed(() => {
+  const spotId = props.preset?.spot_id
+  if (base.value || !spotId) return []
+  return (store.wishBySpot.get(spotId) ?? []).filter((w) => w.status !== 'unavailable' && !store.wishRecords.has(w.id))
+})
+
+function toggleWish(w: WishItem) {
+  const i = form.proxies.findIndex((x) => x.wishItemId === w.id)
+  if (i >= 0) form.proxies.splice(i, 1)
+  else form.proxies.push({ name: w.recipient.trim(), amount: '', wishItemId: w.id })
+}
 const proxySum = computed(() => (amount.value && amount.value > 0 ? amount.value - customRemaining(amount.value, proxies.value.map((x) => x.amount), form.currency) : 0))
 const remaining = computed(() =>
   amount.value && amount.value > 0 ? customRemaining(amount.value, [...customValues.value, ...proxies.value.map((x) => x.amount)], form.currency) : 0,
@@ -162,7 +199,7 @@ function splitRemaining() {
 }
 
 function addProxy() {
-  form.proxies.push({ name: '', amount: '' })
+  form.proxies.push({ name: '', amount: '', wishItemId: null })
 }
 
 const payerName = computed(() => store.participantName(form.payer))
@@ -349,7 +386,15 @@ async function remove() {
 
         <div class="mt-4 rounded-2xl border border-dashed border-ink-200 p-3 dark:border-ink-700">
           <p class="text-sm font-bold">代購<span class="ml-1 text-xs font-normal text-ink-400">幫不是旅伴的人買的，不算進大家的帳</span></p>
-          <div v-for="(x, i) in form.proxies" :key="i" class="mt-2 flex items-center gap-2">
+          <div v-if="spotWishes.length" class="mt-2 rounded-xl bg-sea-100/70 p-2.5 dark:bg-sea-400/10">
+            <p class="text-xs font-semibold text-sea-800 dark:text-sea-200">這個行程有你的代購，要一起記嗎？</p>
+            <label v-for="w in spotWishes" :key="w.id" class="mt-1.5 flex cursor-pointer items-center gap-2 text-sm">
+              <input type="checkbox" class="size-4 shrink-0 accent-sea-500" :checked="form.proxies.some((x) => x.wishItemId === w.id)" @change="toggleWish(w)" />
+              <span class="min-w-0 truncate"><span class="font-semibold">{{ w.recipient }}</span>：{{ wishLabel(w) }}</span>
+            </label>
+          </div>
+          <div v-for="(x, i) in form.proxies" :key="i" class="mt-2">
+          <div class="flex items-center gap-2">
             <label :for="`exp-proxy-name-${i}`" class="sr-only">代購對象</label>
             <input :id="`exp-proxy-name-${i}`" v-model="x.name" class="input min-w-0 flex-1 py-2" maxlength="20" placeholder="幫誰買，例如媽媽" autocomplete="off" />
             <label :for="`exp-proxy-amount-${i}`" class="sr-only">代購金額</label>
@@ -362,6 +407,10 @@ async function remove() {
               autocomplete="off"
             />
             <button type="button" class="icon-btn -mr-2 shrink-0" :aria-label="`刪掉第 ${i + 1} 筆代購`" @click="form.proxies.splice(i, 1)"><X class="size-4" /></button>
+          </div>
+          <p v-if="x.wishItemId && wishById.get(x.wishItemId)" class="mt-0.5 flex items-center gap-1 px-1 text-xs text-ink-400">
+            <ShoppingBag class="size-3 shrink-0" />代購清單：{{ wishLabel(wishById.get(x.wishItemId)!) }}
+          </p>
           </div>
           <p v-if="touched && errors.proxies" class="mt-1 text-xs text-rose-500">{{ errors.proxies }}</p>
           <button type="button" class="mt-2 flex items-center gap-1 text-sm font-semibold text-sea-700 dark:text-sea-300" @click="addProxy">

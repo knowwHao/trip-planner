@@ -1,6 +1,6 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 import { DemoRepo, emptyDb } from './demoRepo'
-import { AccountSessionError, ConflictError, InUseError, LastMemberError, NameTakenError, NoAccessError } from './repository'
+import { AccountSessionError, ConflictError, InUseError, LastMemberError, NameTakenError, NoAccessError, TooManyPhotosError } from './repository'
 import { netBalances } from '@/lib/split'
 import type { SpotInput } from '@/types'
 
@@ -106,6 +106,42 @@ describe('DemoRepo', () => {
     expect((await repo.loadTrip()).proxies).toEqual([])
   })
 
+  it('代購清單：只有自己看得到、照片最多 2 張、記帳後變已買、刪項目只清連結', async () => {
+    const { repo, a, b } = await setup()
+    const [pa] = (await repo.loadTrip()).participants.map((p) => p.id)
+    const w = await repo.createWishItem({ recipient: '媽媽', title: '面膜', qty: 2, note: '', url: '', spot_id: null, status: 'todo', sort_key: 1 })
+    expect((await repo.loadTrip()).wishItems.map((x) => x.title)).toEqual(['面膜'])
+    repo.setSession(b)
+    expect((await repo.loadTrip()).wishItems).toEqual([])
+    await expect(repo.setWishStatus(w.id, 'bought')).rejects.toThrow()
+    repo.setSession(a)
+    const jpg = { thumb: 'data:image/jpeg;base64,AA', full: 'data:image/jpeg;base64,BB' }
+    const p1 = await repo.addWishPhoto(w.id, jpg)
+    await repo.addWishPhoto(w.id, jpg)
+    await expect(repo.addWishPhoto(w.id, jpg)).rejects.toBeInstanceOf(TooManyPhotosError)
+    expect(await repo.getWishPhoto(p1.id, 'full')).toBe(jpg.full)
+    // 打勾、排地點不加版本；改內容加版本
+    await repo.setWishStatus(w.id, 'unavailable')
+    await repo.setWishSpot([w.id], null)
+    await repo.updateWishItem(w.id, 1, { note: '藍色' })
+    await expect(repo.updateWishItem(w.id, 1, { note: '舊的' })).rejects.toBeInstanceOf(ConflictError)
+    const base = { title: '藥妝', amount: 1000, currency: 'JPY', payer_id: pa, spent_on: null, spot_id: null, note: '', twd_amount: null }
+    const eid = await repo.saveExpense({ ...base, split_mode: 'custom' }, [{ participant_id: pa, amount: 600 }], [{ name: '媽媽', amount: 400, wish_item_id: w.id }])
+    let data = await repo.loadTrip()
+    expect(data.wishItems[0].status).toBe('bought')
+    expect(data.proxies[0].wish_item_id).toBe(w.id)
+    // 別人不能拿我的項目記帳，但改我那筆時原本的連結照樣保留
+    repo.setSession(b)
+    await expect(repo.saveExpense({ ...base, split_mode: 'custom' }, [{ participant_id: pa, amount: 600 }], [{ name: '媽媽', amount: 400, wish_item_id: w.id }])).rejects.toThrow()
+    await repo.saveExpense({ ...base, id: eid, version: 1, split_mode: 'custom', note: '乙改的' }, [{ participant_id: pa, amount: 600 }], [{ name: '媽媽', amount: 400, wish_item_id: w.id }])
+    repo.setSession(a)
+    await repo.deleteWishItem(w.id)
+    data = await repo.loadTrip()
+    expect(data.wishItems).toEqual([])
+    expect(data.wishPhotos).toEqual([])
+    expect(data.proxies[0].wish_item_id).toBeNull()
+  })
+
   it('景點改內容加版本、搬動不加，舊版本更新是衝突', async () => {
     const { repo } = await setup()
     const s = await repo.createSpot({ ...spotBase, title: '大阪城', sort_key: 1 })
@@ -207,6 +243,13 @@ describe('DemoRepo', () => {
     expect(data.participants[2].account_id).toBe(mei.id)
     expect(data.participants.every((p) => p.account_id)).toBe(true)
     expect(data.proxies.map((x) => x.name)).toEqual(['媽媽'])
+    // 示範的代購清單：面膜已記帳、另外兩項待買
+    expect(data.wishItems.map((w) => [w.title, w.status])).toEqual([
+      ['面膜', 'bought'],
+      ['合利他命 EX', 'todo'],
+      ['東京香蕉蛋糕', 'todo'],
+    ])
+    expect(data.proxies[0].wish_item_id).toBe(data.wishItems[0].id)
     const bal = netBalances(data)
     expect([...bal.values()].reduce((s, v) => s + v, 0)).toBe(0)
   })

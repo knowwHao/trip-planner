@@ -1,9 +1,9 @@
 <script setup lang="ts">
 import { computed, reactive, ref, watch } from 'vue'
-import { ChevronRight, ListPlus, Navigation, ReceiptText, Trash2 } from 'lucide-vue-next'
+import { ChevronRight, ListPlus, Navigation, ReceiptText, ShoppingBag, Trash2 } from 'lucide-vue-next'
 import ModalSheet from './ModalSheet.vue'
 import StaleNotice from './StaleNotice.vue'
-import type { BookingStatus, Spot, SpotCategory, SpotInput } from '@/types'
+import type { BookingStatus, Id, Spot, SpotCategory, SpotInput } from '@/types'
 import { repo } from '@/data'
 import { useTripStore } from '@/stores/trip'
 import { saveWithConflict } from '@/composables/useConflict'
@@ -14,6 +14,7 @@ import { googleMapsUrl, safeUrl } from '@/lib/maps'
 import { keyAfter } from '@/lib/order'
 import { bookingForCategory, categoryInfo, CATEGORIES, defaultBooking, itemWords, remindLabel } from '@/lib/category'
 import { FLIGHT_NO_RE, normalizeFlightNo } from '@/lib/flight'
+import { wishLabel } from '@/lib/wish'
 
 const props = defineProps<{
   open: boolean
@@ -48,8 +49,11 @@ const base = ref<Spot | null>(null)
 const touched = ref(false)
 const saving = ref(false)
 
+const wishPicked = ref<Set<Id>>(new Set())
+
 function fill(s: Spot | null | undefined) {
   base.value = s ?? null
+  wishPicked.value = new Set(s ? (store.wishBySpot.get(s.id) ?? []).map((w) => w.id) : [])
   const category = s?.category ?? 'sight'
   Object.assign(form, {
     category,
@@ -98,6 +102,33 @@ const itemCount = computed(() => (base.value ? (store.itemsBySpot.get(base.value
 const canAddItems = computed(() => form.category === 'sight' || form.category === 'shop')
 
 const titleInput = ref<HTMLInputElement | null>(null)
+
+// 購物行程可以順便把自己的代購排進來：已經排在這裡的，加上還沒排地點的待買項目
+const wishChoices = computed(() =>
+  form.category === 'shop'
+    ? store.wishItems.filter((w) => (base.value && w.spot_id === base.value.id) || (!w.spot_id && w.status === 'todo'))
+    : [],
+)
+const unplacedCount = computed(() => wishChoices.value.filter((w) => !w.spot_id).length)
+
+function toggleWishPick(id: Id) {
+  const next = new Set(wishPicked.value)
+  if (next.has(id)) next.delete(id)
+  else next.add(id)
+  wishPicked.value = next
+}
+
+/** 依勾選把代購排進或移出這個行程；不是購物類型時不動 */
+async function placeWishes(spotId: Id) {
+  if (form.category !== 'shop') return
+  const add = wishChoices.value.filter((w) => wishPicked.value.has(w.id) && w.spot_id !== spotId).map((w) => w.id)
+  const drop = wishChoices.value.filter((w) => !wishPicked.value.has(w.id) && w.spot_id === spotId).map((w) => w.id)
+  if (!add.length && !drop.length) return
+  await store.mutate(async () => {
+    await repo.setWishSpot(add, spotId)
+    await repo.setWishSpot(drop, null)
+  })
+}
 
 /** 交通的名稱常是「東京 → 京都」，手機鍵盤不好打箭頭，在游標處插入 */
 function insertArrow() {
@@ -175,7 +206,8 @@ async function submit() {
   try {
     if (!base.value) {
       const input: SpotInput = { ...content, day, sort_key: keyAfter(lastKey(day)) }
-      await store.mutate(() => repo.createSpot(input))
+      const created = await store.mutate(() => repo.createSpot(input))
+      await placeWishes(created.id)
       emit('close')
       return
     }
@@ -186,6 +218,7 @@ async function submit() {
     const outcome = await saveWithConflict('個行程', (useLatest) =>
       store.mutate(() => repo.updateSpot(target.id, useLatest ? (latest.value?.version ?? target.version) : target.version, patch)),
     )
+    if (outcome === 'saved') await placeWishes(target.id)
     if (outcome === 'saved' || outcome === 'gone') emit('close')
     else if (outcome === 'reload') fill(latest.value)
   } catch (e) {
@@ -378,6 +411,17 @@ async function remove() {
         <label class="label" for="spot-note">備註（選填）</label>
         <textarea id="spot-note" v-model="form.note" class="input min-h-24" maxlength="2000" placeholder="營業時間、訂位代號、交通方式…" />
       </div>
+      <fieldset v-if="wishChoices.length" class="rounded-2xl bg-sea-100/70 p-3 dark:bg-sea-400/10">
+        <legend class="sr-only">在這裡買的代購</legend>
+        <p class="flex items-center gap-1.5 text-sm font-semibold text-sea-800 dark:text-sea-200">
+          <ShoppingBag class="size-4 shrink-0" />{{ unplacedCount ? `你有 ${unplacedCount} 項代購還沒排地點，要在這裡買嗎？` : '在這裡買的代購' }}
+        </p>
+        <label v-for="w in wishChoices" :key="w.id" class="mt-1.5 flex cursor-pointer items-center gap-2 text-sm">
+          <input type="checkbox" class="size-4 shrink-0 accent-sea-500" :checked="wishPicked.has(w.id)" @change="toggleWishPick(w.id)" />
+          <span class="min-w-0 truncate"><span class="font-semibold">{{ w.recipient }}</span>：{{ wishLabel(w) }}</span>
+        </label>
+        <p class="mt-1.5 text-xs text-ink-400">只有你看得到</p>
+      </fieldset>
       <div v-if="base && !gone" class="flex flex-wrap items-center gap-x-1 gap-y-1">
         <button type="button" class="btn-ghost -ml-2 text-rose-500" @click="remove"><Trash2 class="size-4" />刪除</button>
         <span class="flex-1" />

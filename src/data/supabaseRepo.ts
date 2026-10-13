@@ -8,6 +8,7 @@ import type {
   ExpenseShare,
   Id,
   Participant,
+  PhotoData,
   PinResult,
   ProxyInput,
   ShareInput,
@@ -24,6 +25,11 @@ import type {
   TripInput,
   TripPatch,
   TripSummary,
+  WishItem,
+  WishItemInput,
+  WishItemPatch,
+  WishPhoto,
+  WishStatus,
 } from '@/types'
 import {
   AccountSessionError,
@@ -32,6 +38,7 @@ import {
   LastMemberError,
   NameTakenError,
   NoAccessError,
+  TooManyPhotosError,
   type ItemMove,
   type SpotMove,
   type TripRepository,
@@ -51,6 +58,7 @@ function check<T>(res: { data: T | null; error: PgError | null }): T {
   if (code === 'TP404') throw new RowMissingError()
   if (code === 'TP401') throw new AccountSessionError()
   if (code === 'TP423') throw new LastMemberError()
+  if (code === 'TP424') throw new TooManyPhotosError()
   if (code === 'TP422') throw new Error('已經有用原本當地幣別記的旅費，要先改掉那些旅費才能換幣別')
   if (code === '23505') throw new Error('已經有同名的旅伴')
   if (code === '23503') throw new Error('有旅伴或景點剛被別人刪除，請重新整理後再試')
@@ -181,15 +189,18 @@ export class SupabaseRepo implements TripRepository {
 
   async loadTrip(): Promise<TripData> {
     const id = this.requireTrip()
-    const [trip, participants, spots, items, expenses, shares, proxies, transfers] = await Promise.all([
+    const [trip, participants, spots, items, expenses, shares, proxies, transfers, wishItems, wishPhotos] = await Promise.all([
       this.sb.from('trips').select('*').eq('id', id).maybeSingle(),
       this.sb.from('participants').select('*').eq('trip_id', id).order('sort_order').order('created_at'),
       this.sb.from('spots').select('*').eq('trip_id', id).order('sort_key'),
       this.sb.from('spot_items').select('*').eq('trip_id', id).order('sort_key'),
       this.sb.from('expenses').select('*').eq('trip_id', id),
       this.sb.from('expense_shares').select('expense_id, participant_id, amount').eq('trip_id', id),
-      this.sb.from('expense_proxies').select('id, expense_id, name, amount').eq('trip_id', id).order('sort_order'),
+      this.sb.from('expense_proxies').select('id, expense_id, name, amount, wish_item_id').eq('trip_id', id).order('sort_order'),
       this.sb.from('transfers').select('*').eq('trip_id', id),
+      // RLS 只回自己的代購清單；照片本身另外讀，這裡只拿清單
+      this.sb.from('wish_items').select('*').eq('trip_id', id).order('sort_key'),
+      this.sb.from('wish_photos').select('id, item_id, sort_order').eq('trip_id', id).order('sort_order').order('created_at'),
     ])
     // 不是成員時 RLS 讓每張表都回 0 筆而不是報錯，以旅程那一列是否存在判斷
     const t = check(trip) as Trip | null
@@ -206,6 +217,8 @@ export class SupabaseRepo implements TripRepository {
       shares: (check(shares) as ExpenseShare[]).map((s) => ({ ...s, amount: num(s.amount) })),
       proxies: (check(proxies) as ExpenseProxy[]).map((p) => ({ ...p, amount: Number(p.amount) })),
       transfers: check(transfers) as Transfer[],
+      wishItems: check(wishItems) as WishItem[],
+      wishPhotos: check(wishPhotos) as WishPhoto[],
     }
   }
 
@@ -312,6 +325,60 @@ export class SupabaseRepo implements TripRepository {
 
   async deleteTransfer(id: Id) {
     await this.expectAffected(await this.sb.from('transfers').delete().eq('id', id).select('id'), 'ignore')
+  }
+
+  private requireSession(): AccountSession {
+    if (!this.session) throw new AccountSessionError()
+    return this.session
+  }
+
+  async createWishItem(input: WishItemInput) {
+    const trip_id = this.requireTrip()
+    const owner_id = this.requireSession().id
+    return check(await this.sb.from('wish_items').insert({ ...input, trip_id, owner_id }).select().single()) as WishItem
+  }
+
+  async updateWishItem(id: Id, version: number, patch: WishItemPatch) {
+    await this.expectAffected(
+      await this.sb.from('wish_items').update(patch).eq('id', id).eq('version', version).select('id'),
+      'fail',
+      this.rowExists('wish_items', id),
+    )
+  }
+
+  async setWishStatus(id: Id, status: WishStatus) {
+    await this.expectAffected(await this.sb.from('wish_items').update({ status }).eq('id', id).select('id'), 'fail')
+  }
+
+  async setWishSpot(ids: Id[], spotId: Id | null) {
+    if (ids.length) check(await this.sb.from('wish_items').update({ spot_id: spotId }).in('id', ids).select('id'))
+  }
+
+  async deleteWishItem(id: Id) {
+    await this.expectAffected(await this.sb.from('wish_items').delete().eq('id', id).select('id'), 'ignore')
+  }
+
+  async addWishPhoto(itemId: Id, photo: PhotoData) {
+    const trip_id = this.requireTrip()
+    const owner_id = this.requireSession().id
+    return check(
+      await this.sb
+        .from('wish_photos')
+        .insert({ item_id: itemId, trip_id, owner_id, thumb: photo.thumb, full_image: photo.full })
+        .select('id, item_id, sort_order')
+        .single(),
+    ) as WishPhoto
+  }
+
+  async deleteWishPhoto(id: Id) {
+    await this.expectAffected(await this.sb.from('wish_photos').delete().eq('id', id).select('id'), 'ignore')
+  }
+
+  async getWishPhoto(id: Id, size: 'thumb' | 'full') {
+    const col = size === 'thumb' ? 'thumb' : 'full_image'
+    const row = check(await this.sb.from('wish_photos').select(col).eq('id', id).maybeSingle()) as Record<string, string> | null
+    if (!row) throw new RowMissingError()
+    return row[col]
   }
 
   subscribe(onChange: () => void, onLive: (live: boolean) => void) {

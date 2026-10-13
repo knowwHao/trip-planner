@@ -1,7 +1,7 @@
 <script setup lang="ts">
 import { computed, onBeforeUnmount, watch } from 'vue'
 import { RouterLink, RouterView, useRoute } from 'vue-router'
-import { ChevronLeft, House, LoaderCircle, Lock, MapPinned, RefreshCw, Settings, Wallet } from 'lucide-vue-next'
+import { ChevronLeft, House, LoaderCircle, Lock, MapPinned, RefreshCw, Settings, ShoppingBag, Wallet } from 'lucide-vue-next'
 import EmptyState from '@/components/EmptyState.vue'
 import ThemeToggle from '@/components/ThemeToggle.vue'
 import { useTripStore } from '@/stores/trip'
@@ -18,6 +18,7 @@ const base = computed(() => `/trips/${tripId.value}`)
 const nav = computed(() => [
   { to: base.value, label: '行程', icon: MapPinned, active: route.path === base.value },
   { to: `${base.value}/expenses`, label: '旅費', icon: Wallet, active: route.path.endsWith('/expenses') },
+  { to: `${base.value}/shopping`, label: '代購', icon: ShoppingBag, active: route.path.endsWith('/shopping') },
   { to: `${base.value}/settings`, label: '設定', icon: Settings, active: route.path.endsWith('/settings') },
 ])
 </script>
@@ -65,7 +66,7 @@ const nav = computed(() => [
       class="safe-bottom fixed inset-x-0 bottom-0 z-40 border-t border-ink-100 bg-white/90 backdrop-blur-lg sm:hidden dark:border-ink-800 dark:bg-ink-900/90"
       aria-label="旅程"
     >
-      <div class="mx-auto grid max-w-md grid-cols-3 px-2 pt-1.5 pb-1">
+      <div class="mx-auto grid max-w-md grid-cols-4 px-2 pt-1.5 pb-1">
         <RouterLink
           v-for="item in nav"
           :key="item.to"

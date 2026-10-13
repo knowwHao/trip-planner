@@ -117,9 +117,50 @@ export interface ExpenseProxy {
   name: string
   /** 與費用同幣別 */
   amount: number
+  /** 從代購清單記帳時對應的項目；只有項目的主人看得到那個項目 */
+  wish_item_id: Id | null
 }
 
-export type ProxyInput = Pick<ExpenseProxy, 'name' | 'amount'>
+export type ProxyInput = Pick<ExpenseProxy, 'name' | 'amount'> & { wish_item_id?: Id | null }
+
+/** 代購清單的狀態：待買、已買、買不到 */
+export type WishStatus = 'todo' | 'bought' | 'unavailable'
+
+/** 自己的代購清單項目，同一趟的其他旅伴看不到 */
+export interface WishItem {
+  id: Id
+  trip_id: Id
+  owner_id: Id
+  /** 幫誰買 */
+  recipient: string
+  title: string
+  qty: number
+  note: string
+  url: string
+  /** 打算在哪個行程買 */
+  spot_id: Id | null
+  status: WishStatus
+  sort_key: number
+  version: number
+  created_at: string
+  updated_at: string
+}
+
+export type WishItemInput = Pick<WishItem, 'recipient' | 'title' | 'qty' | 'note' | 'url' | 'spot_id' | 'status' | 'sort_key'>
+export type WishItemPatch = Partial<Pick<WishItem, 'recipient' | 'title' | 'qty' | 'note' | 'url'>>
+
+/** 代購項目的照片；圖片本身另外讀，載入旅程時只拿這些 */
+export interface WishPhoto {
+  id: Id
+  item_id: Id
+  sort_order: number
+}
+
+/** 壓縮好的照片，data URL（JPEG） */
+export interface PhotoData {
+  thumb: string
+  full: string
+}
 
 /** 已經轉的錢，一律新台幣整數 */
 export interface Transfer {
@@ -142,6 +183,9 @@ export interface TripData {
   shares: ExpenseShare[]
   proxies: ExpenseProxy[]
   transfers: Transfer[]
+  /** 只有自己的 */
+  wishItems: WishItem[]
+  wishPhotos: WishPhoto[]
 }
 
 export type TripInput = Pick<Trip, 'name' | 'start_date' | 'end_date' | 'currency' | 'fx_rate'>

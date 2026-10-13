@@ -11,6 +11,7 @@
 --
 -- 旅伴（participants）account_id 有值的是成員（看得到、能編輯）；被移出的人 account_id 變 null，留著名字讓旅費紀錄照常結算
 -- 幫不是旅伴的人買的部分記在 expense_proxies（代購），不進旅伴之間的結算
+-- 代購清單（wish_items、wish_photos）是每個人自己的，只有自己讀寫得到；記帳時 expense_proxies.wish_item_id 指回清單項目
 --
 -- 同時編輯：內容欄位改動時 version 自動 +1，前端以 version 做樂觀鎖，
 -- 版本對不上（別人剛改過）時更新 0 列，前端再判斷是衝突、資料已刪除還是已經不是成員
@@ -176,12 +177,51 @@ create table if not exists public.expense_proxies (
   foreign key (expense_id, trip_id) references public.expenses (id, trip_id) on delete cascade
 );
 
+-- 代購清單：每個人自己的，同一趟的其他旅伴也看不到（RLS 另外比對 owner_id）
+create table if not exists public.wish_items (
+  id         uuid primary key default gen_random_uuid(),
+  trip_id    uuid not null references public.trips (id) on delete cascade,
+  owner_id   uuid not null references public.accounts (id) on delete cascade,
+  -- 幫誰買
+  recipient  text not null check (length(btrim(recipient)) between 1 and 20),
+  title      text not null check (length(btrim(title)) between 1 and 80),
+  qty        int not null default 1 check (qty between 1 and 999),
+  note       text not null default '' check (length(note) <= 1000),
+  url        text not null default '' check (length(url) <= 1000 and (url = '' or url ~* '^https?://')),
+  -- 打算在哪個行程買；行程刪掉時只清 spot_id
+  spot_id    uuid,
+  -- todo 待買、bought 已買、unavailable 買不到；與排序、排地點一樣不算內容修改，不加版本
+  status     text not null default 'todo' check (status in ('todo', 'bought', 'unavailable')),
+  sort_key   double precision not null default 0,
+  version    int not null default 1,
+  created_at timestamptz not null default now(),
+  updated_at timestamptz not null default now(),
+  unique (id, trip_id),
+  -- 給照片的複合外鍵用，照片只能掛在自己的項目上
+  unique (id, trip_id, owner_id),
+  foreign key (spot_id, trip_id) references public.spots (id, trip_id) on delete set null (spot_id)
+);
+
+-- 代購項目的照片：前端壓縮成 JPEG 後以 data URL 存進資料庫，權限才能沿用 RLS；縮圖給清單、大圖點開才讀
+create table if not exists public.wish_photos (
+  id         uuid primary key default gen_random_uuid(),
+  item_id    uuid not null,
+  trip_id    uuid not null references public.trips (id) on delete cascade,
+  owner_id   uuid not null,
+  thumb      text not null check (length(thumb) <= 60000 and thumb ~ '^data:image/jpeg;base64,[A-Za-z0-9+/=]+$'),
+  full_image text not null check (length(full_image) <= 700000 and full_image ~ '^data:image/jpeg;base64,[A-Za-z0-9+/=]+$'),
+  sort_order int not null default 0,
+  created_at timestamptz not null default now(),
+  foreign key (item_id, trip_id, owner_id) references public.wish_items (id, trip_id, owner_id) on delete cascade
+);
+
 -- ---------- 清除舊版（旅程連結版）殘留 ----------
 -- 舊版以 x-trip-token 比對旅程連結；policy 依賴 current_trip_id()，要先拆掉 policy 才能刪函式，下方 RLS 段落會重建
 do $$
 declare t text;
 begin
-  foreach t in array array['trips', 'participants', 'spots', 'expenses', 'expense_shares', 'transfers', 'spot_items', 'expense_proxies'] loop
+  foreach t in array array['trips', 'participants', 'spots', 'expenses', 'expense_shares', 'transfers', 'spot_items', 'expense_proxies',
+                           'wish_items', 'wish_photos'] loop
     execute format('drop policy if exists trip_all on public.%I', t);
   end loop;
 end;
@@ -229,6 +269,9 @@ alter table public.spots add column if not exists arr_day_offset int not null de
 alter table public.expenses
   add column if not exists twd_amount int check (twd_amount > 0 and twd_amount < 100000000);
 
+-- 代購記帳時對應的代購清單項目；項目刪掉時只清這欄，代購紀錄照常
+alter table public.expense_proxies add column if not exists wish_item_id uuid;
+
 -- 旅伴對應的帳號；有值就是成員。帳號被刪除時留下名字，旅費紀錄不受影響
 alter table public.participants
   add column if not exists account_id uuid references public.accounts (id) on delete set null;
@@ -241,6 +284,10 @@ begin
       (category not in ('shop', 'other') or booking is null) and (category <> 'stay' or booking is distinct from 'none'));
   end if;
   -- 新台幣的旅費本來就是實際金額，不需要另外填
+  if not exists (select 1 from pg_constraint where conname = 'expense_proxies_wish_item_fkey') then
+    alter table public.expense_proxies add constraint expense_proxies_wish_item_fkey
+      foreign key (wish_item_id, trip_id) references public.wish_items (id, trip_id) on delete set null (wish_item_id);
+  end if;
   if not exists (select 1 from pg_constraint where conname = 'expenses_twd_amount_foreign_only') then
     alter table public.expenses add constraint expenses_twd_amount_foreign_only check (twd_amount is null or currency <> 'TWD');
   end if;
@@ -258,18 +305,21 @@ create index if not exists spot_items_trip_idx on public.spot_items (trip_id);
 create index if not exists spot_items_spot_idx on public.spot_items (spot_id);
 create index if not exists expense_proxies_trip_idx on public.expense_proxies (trip_id);
 create index if not exists expense_proxies_expense_idx on public.expense_proxies (expense_id);
+create index if not exists expense_proxies_wish_idx on public.expense_proxies (wish_item_id) where wish_item_id is not null;
+create index if not exists wish_items_trip_owner_idx on public.wish_items (trip_id, owner_id);
+create index if not exists wish_photos_item_idx on public.wish_photos (item_id);
 
 -- ---------- 版本號 ----------
 
 -- 只有內容欄位變動才 +1：拖曳排序（day、sort_key）、子項目打勾（done）與成員異動（account_id）不算，
--- 否則別人正在編輯的那筆一被搬動或勾選就會被判成衝突
+-- 否則別人正在編輯的那筆一被搬動或勾選就會被判成衝突；觸發器的參數是這張表另外不算的欄位
 create or replace function public.bump_version()
 returns trigger
 language plpgsql
 set search_path = ''
 as $$
 declare
-  skip constant text[] := array['version', 'updated_at', 'sort_key', 'day', 'done', 'account_id'];
+  skip text[] := array['version', 'updated_at', 'sort_key', 'day', 'done', 'account_id'] || coalesce(tg_argv::text[], '{}');
 begin
   if (to_jsonb(new) - skip) is distinct from (to_jsonb(old) - skip) then
     new.version := old.version + 1;
@@ -290,6 +340,29 @@ begin
   end loop;
 end;
 $$;
+
+-- 代購項目打勾（status）與排地點（spot_id）不算內容修改
+drop trigger if exists bump_version on public.wish_items;
+create trigger bump_version before update on public.wish_items
+  for each row execute function public.bump_version('status', 'spot_id');
+
+-- 一個代購項目最多 2 張照片，與前端的上限一致
+create or replace function public.limit_wish_photos()
+returns trigger
+language plpgsql
+set search_path = ''
+as $$
+begin
+  if (select count(*) from public.wish_photos where item_id = new.item_id) >= 2 then
+    raise exception 'too many photos' using errcode = 'TP424';
+  end if;
+  return new;
+end;
+$$;
+
+drop trigger if exists limit_wish_photos on public.wish_photos;
+create trigger limit_wish_photos before insert on public.wish_photos
+  for each row execute function public.limit_wish_photos();
 
 -- 換當地幣別時，已記的外幣費用會被當成新幣別算，所以有舊幣別的費用就不准換
 create or replace function public.check_trip_currency()
@@ -402,6 +475,25 @@ begin
   end loop;
 end;
 $$;
+
+-- 代購清單只有自己讀寫得到：除了要是成員，還要是自己的（owner_id）；被移出旅程後也就看不到，加回來會再出現
+do $$
+declare t text;
+begin
+  foreach t in array array['wish_items', 'wish_photos'] loop
+    execute format('alter table public.%I enable row level security', t);
+    execute format('revoke truncate, trigger, references on public.%I from anon, authenticated', t);
+    execute format(
+      'create policy trip_all on public.%I for all to anon, authenticated
+         using (trip_id in (select public.my_trip_ids()) and owner_id = (select public.current_account_id()))
+         with check (trip_id in (select public.my_trip_ids()) and owner_id = (select public.current_account_id()))', t);
+  end loop;
+end;
+$$;
+grant select, insert, update, delete on public.wish_items to anon, authenticated;
+-- 照片不能改，只能新增或刪掉
+revoke update on public.wish_photos from anon, authenticated;
+grant select, insert, delete on public.wish_photos to anon, authenticated;
 
 -- 旅程只能經 create_trip() 建立（建立者一併成為成員）
 revoke insert, update on public.trips from anon, authenticated;
@@ -688,6 +780,7 @@ $$;
 -- 費用、分攤與代購一起寫，避免只寫進一半；security invoker 讓 RLS 照常把關
 -- p_expense 帶 id 與 version 時是修改，版本不符丟 TP409、費用已不在丟 TP404
 -- 平分：旅伴平分扣掉代購後的金額（沒有旅伴時代購要等於總額）；指定金額：旅伴與代購加總要等於總額
+-- 代購帶 wish_item_id 時要是自己的代購清單項目（或這筆原本就連著的），存好後把那些項目標成已買
 create or replace function public.save_expense(p_trip uuid, p_expense jsonb, p_shares jsonb, p_proxies jsonb)
 returns uuid
 language plpgsql
@@ -702,6 +795,7 @@ declare
   v_mode text := p_expense ->> 'split_mode';
   v_found uuid;
   v_proxy_sum numeric;
+  v_keep uuid[] := '{}';
 begin
   if p_trip is null or p_trip not in (select public.my_trip_ids()) then
     raise exception 'not a member of this trip' using errcode = '42501';
@@ -745,17 +839,31 @@ begin
       end if;
       raise exception 'expense not found' using errcode = 'TP404';
     end if;
+    -- 別人改這筆時，看不到的代購清單項目也要能原樣保留
+    v_keep := array(select wish_item_id from public.expense_proxies where expense_id = v_id and wish_item_id is not null);
     delete from public.expense_shares where expense_id = v_id;
     delete from public.expense_proxies where expense_id = v_id;
+  end if;
+
+  if exists (
+    select 1 from jsonb_array_elements(p_proxies) x
+     where nullif(x ->> 'wish_item_id', '') is not null
+       and (x ->> 'wish_item_id')::uuid <> all (v_keep)
+       and not exists (select 1 from public.wish_items w where w.id = (x ->> 'wish_item_id')::uuid and w.trip_id = p_trip)) then
+    raise exception 'wish item not found' using errcode = 'TP404';
   end if;
 
   insert into public.expense_shares (expense_id, trip_id, participant_id, amount)
   select v_id, p_trip, (s ->> 'participant_id')::uuid,
          case when v_mode = 'custom' then (s ->> 'amount')::numeric end
     from jsonb_array_elements(p_shares) s;
-  insert into public.expense_proxies (expense_id, trip_id, name, amount, sort_order)
-  select v_id, p_trip, btrim(x ->> 'name'), (x ->> 'amount')::numeric, o
+  insert into public.expense_proxies (expense_id, trip_id, name, amount, sort_order, wish_item_id)
+  select v_id, p_trip, btrim(x ->> 'name'), (x ->> 'amount')::numeric, o, nullif(x ->> 'wish_item_id', '')::uuid
     from jsonb_array_elements(p_proxies) with ordinality as u (x, o);
+  -- RLS 只讓這裡改到自己的項目
+  update public.wish_items set status = 'bought'
+   where status <> 'bought'
+     and id in (select nullif(x ->> 'wish_item_id', '')::uuid from jsonb_array_elements(p_proxies) x);
   return v_id;
 end;
 $$;
@@ -766,6 +874,7 @@ revoke execute on function public.new_secret() from public, anon, authenticated;
 revoke execute on function public.bump_version() from public, anon, authenticated;
 revoke execute on function public.check_trip_currency() from public, anon, authenticated;
 revoke execute on function public.keep_one_member() from public, anon, authenticated;
+revoke execute on function public.limit_wish_photos() from public, anon, authenticated;
 revoke execute on function public.sync_member_name() from public, anon, authenticated;
 revoke execute on function public.hash_account_pin(text, text) from public, anon, authenticated;
 revoke execute on function public.attempt_account_pin(uuid, text) from public, anon, authenticated;

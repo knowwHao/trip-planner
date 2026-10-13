@@ -230,6 +230,19 @@ export function proxyCollections(data: SplitData): ProxyCollection[] {
   return [...map.values()]
 }
 
+/** 每筆代購換成新台幣的金額（依 proxy id），代購清單顯示「已記帳」時用 */
+export function proxyTwdById(data: SplitData): Map<Id, number> {
+  const map = new Map<Id, number>()
+  const byProxy = groupProxies(data.proxies)
+  const duesFor = duesOf(data)
+  for (const e of data.expenses) {
+    const list = byProxy.get(e.id)
+    if (!list) continue
+    duesFor(e).proxyDues.forEach((d, i) => map.set(list[i].id, d.due))
+  }
+  return map
+}
+
 /** 指定金額時還沒分配的金額（負數是分配超過） */
 export function customRemaining(amount: number, entered: (number | null)[], code: string): number {
   const used = entered.reduce<number>((s, v) => s + (v && Number.isFinite(v) ? toMinor(v, code) : 0), 0)
