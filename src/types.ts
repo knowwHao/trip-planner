@@ -141,6 +141,8 @@ export interface WishItem {
   url: string
   /** 打算在哪個行程買 */
   spot_id: Id | null
+  /** 行程底下的哪間店（子項目）；有值時 spot_id 一定有值 */
+  item_id: Id | null
   status: WishStatus
   sort_key: number
   version: number
@@ -148,7 +150,7 @@ export interface WishItem {
   updated_at: string
 }
 
-export type WishItemInput = Pick<WishItem, 'recipient' | 'title' | 'qty' | 'note' | 'url' | 'spot_id' | 'status' | 'sort_key'>
+export type WishItemInput = Pick<WishItem, 'recipient' | 'title' | 'qty' | 'note' | 'url' | 'spot_id' | 'item_id' | 'status' | 'sort_key'>
 export type WishItemPatch = Partial<Pick<WishItem, 'recipient' | 'title' | 'qty' | 'note' | 'url'>>
 
 /** 代購項目的照片；圖片本身另外讀，載入旅程時只拿這些 */

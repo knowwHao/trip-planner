@@ -29,7 +29,12 @@ const counts = computed(() => {
   return c
 })
 const groups = computed(() => groupByRecipient(store.wishItems.filter((w) => filter.value === 'all' || w.status === filter.value)))
-const spotTitle = (id: Id | null) => (id ? (store.data?.spots.find((s) => s.id === id)?.title ?? '') : '')
+/** 在哪買：「行程 › 店家」 */
+function placeTitle(w: WishItem): string {
+  const spot = w.spot_id ? store.data?.spots.find((s) => s.id === w.spot_id)?.title : ''
+  const item = w.item_id ? store.data?.items.find((i) => i.id === w.item_id)?.title : ''
+  return [spot, item].filter(Boolean).join(' › ')
+}
 
 const editing = ref<WishItem | null>(null)
 const itemOpen = ref(false)
@@ -175,7 +180,7 @@ function closeExpense() {
             </span>
             <span v-if="w.note" class="block truncate text-xs text-ink-500 dark:text-ink-300">{{ w.note }}</span>
             <span class="flex flex-wrap items-center gap-x-2 text-xs text-ink-400">
-              <span v-if="w.spot_id && spotTitle(w.spot_id)" class="inline-flex items-center gap-0.5"><MapPin class="size-3" />{{ spotTitle(w.spot_id) }}</span>
+              <span v-if="placeTitle(w)" class="inline-flex items-center gap-0.5"><MapPin class="size-3" />{{ placeTitle(w) }}</span>
               <span v-if="store.wishRecords.get(w.id)" class="num inline-flex items-center gap-0.5 font-semibold text-sea-700 dark:text-sea-300">
                 <ReceiptText class="size-3" />已記帳 {{ formatMoney(store.wishRecords.get(w.id)!.proxy.amount, store.wishRecords.get(w.id)!.expense.currency) }}
                 <template v-if="store.wishRecords.get(w.id)!.expense.currency !== 'TWD'">≈ {{ formatMoney(store.wishRecords.get(w.id)!.twd) }}</template>

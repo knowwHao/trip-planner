@@ -240,6 +240,17 @@ export const useTripStore = defineStore('trip', () => {
     }
     return map
   })
+  /** 自己排在各店家（子項目）的代購項目 */
+  const wishByItem = computed(() => {
+    const map = new Map<Id, WishItem[]>()
+    for (const w of wishItems.value) {
+      if (!w.item_id) continue
+      const list = map.get(w.item_id)
+      if (list) list.push(w)
+      else map.set(w.item_id, [w])
+    }
+    return map
+  })
   const wishPhotosByItem = computed(() => {
     const map = new Map<Id, WishPhoto[]>()
     for (const p of data.value?.wishPhotos ?? []) {
@@ -317,6 +328,7 @@ export const useTripStore = defineStore('trip', () => {
     proxyDebts,
     wishItems,
     wishBySpot,
+    wishByItem,
     wishPhotosByItem,
     wishRecords,
     open,

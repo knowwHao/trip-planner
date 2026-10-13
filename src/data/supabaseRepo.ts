@@ -350,8 +350,8 @@ export class SupabaseRepo implements TripRepository {
     await this.expectAffected(await this.sb.from('wish_items').update({ status }).eq('id', id).select('id'), 'fail')
   }
 
-  async setWishSpot(ids: Id[], spotId: Id | null) {
-    if (ids.length) check(await this.sb.from('wish_items').update({ spot_id: spotId }).in('id', ids).select('id'))
+  async setWishPlace(ids: Id[], spotId: Id | null, itemId: Id | null = null) {
+    if (ids.length) check(await this.sb.from('wish_items').update({ spot_id: spotId, item_id: spotId ? itemId : null }).in('id', ids).select('id'))
   }
 
   async deleteWishItem(id: Id) {

@@ -189,6 +189,7 @@ export function seedDemoTrip(me: AccountInfo, others: AccountInfo[]) {
     note: '',
     url: '',
     spot_id: null,
+    item_id: null,
     status: 'todo',
     sort_key: (i + 1) * SORT_STEP,
     version: 1,
@@ -196,9 +197,10 @@ export function seedDemoTrip(me: AccountInfo, others: AccountInfo[]) {
     updated_at: t,
     ...extra,
   })
+  const matsumoto = items.find((x) => x.title === '松本清 銀座店')!
   const wishItems: WishItem[] = [
-    wish(0, '媽媽', '面膜', { qty: 2, spot_id: ginza.id, status: 'bought', note: '肌美精，藍色那款' }),
-    wish(1, '阿姨', '合利他命 EX', { spot_id: ginza.id, note: '270 錠' }),
+    wish(0, '媽媽', '面膜', { qty: 2, spot_id: ginza.id, item_id: matsumoto.id, status: 'bought', note: '肌美精，藍色那款' }),
+    wish(1, '阿姨', '合利他命 EX', { spot_id: ginza.id, item_id: matsumoto.id, note: '270 錠' }),
     wish(2, '同事小陳', '東京香蕉蛋糕', { qty: 3, note: '機場或東京車站買' }),
   ]
   const proxies: SeedProxy[] = [

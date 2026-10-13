@@ -162,7 +162,8 @@ export interface TripRepository {
   updateWishItem(id: Id, version: number, patch: WishItemPatch): Promise<void>
   /** 打勾與排地點都不檢查版本 */
   setWishStatus(id: Id, status: WishStatus): Promise<void>
-  setWishSpot(ids: Id[], spotId: Id | null): Promise<void>
+  /** 排到行程（spotId）或行程底下的店家（itemId，要屬於那個行程）；都給 null 是還沒排 */
+  setWishPlace(ids: Id[], spotId: Id | null, itemId?: Id | null): Promise<void>
   deleteWishItem(id: Id): Promise<void>
   /** 超過上限丟 TooManyPhotosError */
   addWishPhoto(itemId: Id, photo: PhotoData): Promise<WishPhoto>

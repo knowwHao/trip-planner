@@ -13,6 +13,7 @@ const emit = defineEmits<{ close: []; edit: [item: WishItem]; record: [] }>()
 
 const store = useTripStore()
 const list = computed(() => (props.spot ? (store.wishBySpot.get(props.spot.id) ?? []) : []))
+const itemTitle = (id: string | null) => (id ? (store.data?.items.find((i) => i.id === id)?.title ?? '') : '')
 const canRecord = computed(() => list.value.some((w) => w.status !== 'unavailable' && !store.wishRecords.has(w.id)))
 
 async function toggle(w: WishItem) {
@@ -45,7 +46,7 @@ async function toggle(w: WishItem) {
         <button type="button" class="min-w-0 flex-1 text-left" @click="emit('edit', w)">
           <span class="block truncate text-sm font-semibold" :class="w.status !== 'todo' && 'text-ink-400'">{{ wishLabel(w) }}</span>
           <span class="block truncate text-xs text-ink-400">
-            幫{{ w.recipient }}買<template v-if="w.status === 'unavailable'">・買不到</template><template v-if="store.wishRecords.has(w.id)">・已記帳</template>
+            幫{{ w.recipient }}買<template v-if="itemTitle(w.item_id)">・在{{ itemTitle(w.item_id) }}</template><template v-if="w.status === 'unavailable'">・買不到</template><template v-if="store.wishRecords.has(w.id)">・已記帳</template>
           </span>
         </button>
       </li>

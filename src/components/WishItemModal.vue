@@ -45,7 +45,7 @@ function fill(w: WishItem | null | undefined) {
     qty: w?.qty ?? 1,
     note: w?.note ?? '',
     url: w?.url ?? '',
-    spot: w?.spot_id ?? '',
+    spot: placeValue(w?.spot_id ?? null, w?.item_id ?? null),
     status: w?.status ?? 'todo',
   })
   added.value = []
@@ -66,12 +66,26 @@ const savedPhotos = computed(() => (base.value ? (store.wishPhotosByItem.get(bas
 const photoCount = computed(() => savedPhotos.value.length + added.value.length)
 const record = computed(() => (base.value ? store.wishRecords.get(base.value.id) : undefined))
 
-// 購物行程排前面，在哪買最常選的就是它們
-const spotOptions = computed(() => {
+/** 在哪買的選單值：「行程 id」或「行程 id|店家 id」 */
+function placeValue(spotId: Id | null, itemId: Id | null): string {
+  return spotId ? (itemId ? `${spotId}|${itemId}` : spotId) : ''
+}
+
+function parsePlace(v: string): { spotId: Id | null; itemId: Id | null } {
+  const [spotId, itemId] = v.split('|')
+  return { spotId: spotId || null, itemId: itemId || null }
+}
+
+// 購物行程排前面，在哪買最常選的就是它們；行程底下的店家緊接著列在行程下面
+const placeOptions = computed(() => {
   const dayOf = (s: { day: number | null }) => (s.day !== null && s.day <= store.dayCount ? s.day : Infinity)
-  return [...(store.data?.spots ?? [])]
-    .sort((a, b) => Number(b.category === 'shop') - Number(a.category === 'shop') || dayOf(a) - dayOf(b) || a.sort_key - b.sort_key)
-    .map((s) => ({ value: s.id, label: `${dayOf(s) === Infinity ? '口袋' : `D${s.day}`} ${s.title}` }))
+  const spots = [...(store.data?.spots ?? [])].sort(
+    (a, b) => Number(b.category === 'shop') - Number(a.category === 'shop') || dayOf(a) - dayOf(b) || a.sort_key - b.sort_key,
+  )
+  return spots.flatMap((s) => [
+    { value: s.id, label: `${dayOf(s) === Infinity ? '口袋' : `D${s.day}`} ${s.title}` },
+    ...(store.itemsBySpot.get(s.id) ?? []).map((it) => ({ value: placeValue(s.id, it.id), label: `　› ${it.title}` })),
+  ])
 })
 
 const errors = computed(() => {
@@ -118,12 +132,18 @@ async function submit() {
     note: form.note.trim(),
     url: form.url.trim() ? safeUrl(form.url)! : '',
   }
-  const spotId = form.spot || null
+  const { spotId, itemId } = parsePlace(form.spot)
   saving.value = true
   try {
     if (!base.value) {
       const created = await store.mutate(() =>
-        repo.createWishItem({ ...content, spot_id: spotId, status: form.status, sort_key: keyAfter(store.wishItems.at(-1)?.sort_key) }),
+        repo.createWishItem({
+          ...content,
+          spot_id: spotId,
+          item_id: itemId,
+          status: form.status,
+          sort_key: keyAfter(store.wishItems.at(-1)?.sort_key),
+        }),
       )
       // 項目已經建好，照片失敗也要關掉表單，否則再按一次儲存會多建一個
       try {
@@ -138,7 +158,7 @@ async function submit() {
     const outcome = await saveWithConflict('個代購項目', (useLatest) =>
       store.mutate(async () => {
         await repo.updateWishItem(target.id, useLatest ? (latest.value?.version ?? target.version) : target.version, content)
-        if (spotId !== (latest.value?.spot_id ?? null)) await repo.setWishSpot([target.id], spotId)
+        if (form.spot !== placeValue(latest.value?.spot_id ?? null, latest.value?.item_id ?? null)) await repo.setWishPlace([target.id], spotId, itemId)
         if (form.status !== latest.value?.status) await repo.setWishStatus(target.id, form.status)
         await syncPhotos(target.id)
       }),
@@ -248,7 +268,7 @@ async function remove() {
         <label class="label" for="wish-spot">在哪買（選填）</label>
         <select id="wish-spot" v-model="form.spot" class="input">
           <option value="">還沒決定</option>
-          <option v-for="s in spotOptions" :key="s.value" :value="s.value">{{ s.label }}</option>
+          <option v-for="s in placeOptions" :key="s.value" :value="s.value">{{ s.label }}</option>
         </select>
       </div>
       <div>

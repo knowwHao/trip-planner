@@ -114,6 +114,7 @@ function readStorage(): DemoDb | null {
     db.proxies ??= []
     for (const p of db.proxies) p.wish_item_id ??= null
     db.wishItems ??= []
+    for (const w of db.wishItems) w.item_id ??= null
     db.wishPhotos ??= []
     // 與 schema.sql 一樣拿掉旅程連結；舊的示範旅程沒有成員，誰都看不到
     for (const t of db.trips) Reflect.deleteProperty(t, 'token')
@@ -387,7 +388,7 @@ export class DemoRepo implements TripRepository {
     this.db.items = this.db.items.filter((i) => i.spot_id !== id)
     // 與 schema.sql 相同：行程刪掉時旅費的行程與子項目一起清掉
     for (const e of this.db.expenses) if (e.spot_id === id) Object.assign(e, { spot_id: null, item_id: null })
-    for (const w of this.db.wishItems) if (w.spot_id === id) w.spot_id = null
+    for (const w of this.db.wishItems) if (w.spot_id === id) Object.assign(w, { spot_id: null, item_id: null })
     this.commit()
   }
 
@@ -437,6 +438,7 @@ export class DemoRepo implements TripRepository {
     const trip = this.guard()
     this.db.items = this.db.items.filter((i) => !(i.id === id && i.trip_id === trip.id))
     for (const e of this.db.expenses) if (e.item_id === id) e.item_id = null
+    for (const w of this.db.wishItems) if (w.item_id === id) w.item_id = null
     this.commit()
   }
 
@@ -614,11 +616,17 @@ export class DemoRepo implements TripRepository {
     this.commit()
   }
 
-  async setWishSpot(ids: Id[], spotId: Id | null) {
+  async setWishPlace(ids: Id[], spotId: Id | null, itemId: Id | null = null) {
     // 與 moveSpots 一樣只能 guard 一次，否則重讀 localStorage 會丟掉前面的修改
     const trip = this.guard()
     const me = this.session!.id
-    for (const w of this.db.wishItems) if (ids.includes(w.id) && w.trip_id === trip.id && w.owner_id === me) w.spot_id = spotId
+    // 與 wish_items_item_fkey 相同：店家要屬於這個行程
+    if (spotId && itemId && !this.db.items.some((i) => i.id === itemId && i.spot_id === spotId && i.trip_id === trip.id)) {
+      throw new Error('有旅伴或景點剛被別人刪除，請重新整理後再試')
+    }
+    for (const w of this.db.wishItems) {
+      if (ids.includes(w.id) && w.trip_id === trip.id && w.owner_id === me) Object.assign(w, { spot_id: spotId, item_id: spotId ? itemId : null })
+    }
     this.commit()
   }
 
