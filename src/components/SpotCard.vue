@@ -13,7 +13,7 @@ import { expenseTwd } from '@/lib/split'
 import { flightSummary, hasFlight } from '@/lib/flight'
 
 const props = withDefaults(defineProps<{ spot: Spot; draggable?: boolean }>(), { draggable: true })
-const emit = defineEmits<{ edit: []; booking: []; 'item-edit': [item: SpotItem | null]; expenses: []; wishes: [] }>()
+const emit = defineEmits<{ edit: []; booking: []; 'item-edit': [item: SpotItem | null]; 'item-expenses': [item: SpotItem]; expenses: []; wishes: [] }>()
 
 const store = useTripStore()
 const expanded = useExpanded()
@@ -63,22 +63,77 @@ const status = computed(() => {
       >
         <GripVertical class="size-4" />
       </button>
-      <button type="button" class="min-w-0 flex-1 rounded-xl px-1.5 py-2 text-left" @click="emit('edit')">
-        <div class="flex items-baseline gap-1.5">
-          <span class="shrink-0 self-center text-base leading-none" :title="category.label" aria-hidden="true">{{ category.emoji }}</span>
-          <span class="sr-only">{{ category.label }}</span>
-          <span v-if="spot.start_time" class="num shrink-0 text-sm font-bold text-sea-600 dark:text-sea-400">{{ formatTime(spot.start_time) }}</span>
-          <span class="min-w-0 font-bold break-words">{{ spot.title }}</span>
+      <div class="min-w-0 flex-1">
+        <button type="button" class="block w-full rounded-xl px-1.5 py-2 text-left" @click="emit('edit')">
+          <!-- 行高一致、對齊第一行：名稱換行時 emoji 與時間才不會跑到兩行中間 -->
+          <div class="flex items-start gap-1.5">
+            <span class="shrink-0 text-base leading-6" :title="category.label" aria-hidden="true">{{ category.emoji }}</span>
+            <span class="sr-only">{{ category.label }}</span>
+            <span v-if="spot.start_time" class="num shrink-0 text-sm leading-6 font-bold text-sea-600 dark:text-sea-400">{{ formatTime(spot.start_time) }}</span>
+            <span class="min-w-0 leading-6 font-bold break-words">{{ spot.title }}</span>
+          </div>
+          <p v-if="flight" class="num mt-0.5 text-xs font-semibold break-words text-ink-600 dark:text-ink-200">
+            <span class="mr-1" aria-hidden="true">✈️</span>{{ flight }}
+          </p>
+          <p v-if="spot.address" class="mt-0.5 flex items-start gap-1 text-xs text-ink-400 dark:text-ink-300">
+            <MapPin class="mt-0.5 size-3 shrink-0" /><span class="min-w-0 break-words">{{ spot.address }}</span>
+          </p>
+          <p v-if="spot.note" class="mt-1 line-clamp-3 text-sm whitespace-pre-line text-ink-600 dark:text-ink-200">{{ spot.note }}</p>
+        </button>
+        <div v-if="status || showItems || expenses.length || wishes.length" class="flex flex-wrap items-center gap-x-1 gap-y-0.5 pb-0.5">
+          <button
+            v-if="status?.next"
+            type="button"
+            class="chip mx-1 whitespace-nowrap transition active:scale-95"
+            :class="status.cls"
+            :aria-label="`${spot.title}：${status.text}，點一下改成${status.next}`"
+            :title="`點一下改成「${status.next}」`"
+            @click="emit('booking')"
+          >
+            {{ status.text }}
+          </button>
+          <span v-else-if="status" class="mx-1 whitespace-nowrap" :class="status.cls">{{ status.text }}</span>
+          <template v-if="showItems">
+            <button
+              v-if="items.length"
+              type="button"
+              class="flex items-center gap-1 rounded-lg px-1.5 py-1 text-xs font-semibold text-ink-500 hover:bg-ink-50 dark:text-ink-300 dark:hover:bg-ink-800"
+              :aria-expanded="open"
+              @click="expanded.toggle(spot.id)"
+            >
+              <ChevronRight class="size-3.5 transition" :class="open && 'rotate-90'" />
+              {{ items.length }} 個{{ words.noun }}・{{ words.done }} {{ doneCount }}
+            </button>
+            <button
+              v-else
+              type="button"
+              class="flex items-center gap-1 rounded-lg px-1.5 py-1 text-xs font-semibold text-ink-400 hover:bg-ink-50 dark:hover:bg-ink-800"
+              @click="addFirst"
+            >
+              <Plus class="size-3.5" />加入{{ words.noun }}<template v-if="!expenses.length">（一區逛好幾間時用）</template>
+            </button>
+          </template>
+          <button
+            v-if="expenses.length"
+            type="button"
+            class="num flex items-center gap-1 rounded-lg px-1.5 py-1 text-xs font-semibold text-ink-500 hover:bg-ink-50 dark:text-ink-300 dark:hover:bg-ink-800"
+            :aria-label="`${spot.title} 的旅費：${expenses.length} 筆，共 ${formatMoney(spent)}`"
+            @click="emit('expenses')"
+          >
+            <ReceiptText class="size-3.5" />{{ formatMoney(spent) }}・{{ expenses.length }} 筆
+          </button>
+          <button
+            v-if="wishes.length"
+            type="button"
+            class="flex items-center gap-1 rounded-lg px-1.5 py-1 text-xs font-semibold text-ink-500 hover:bg-ink-50 dark:text-ink-300 dark:hover:bg-ink-800"
+            :aria-label="`${spot.title} 的代購：${wishes.length} 項，待買 ${wishTodo} 項`"
+            @click="emit('wishes')"
+          >
+            <ShoppingBag class="size-3.5" />代購 {{ wishes.length }}<template v-if="wishTodo">・待買 {{ wishTodo }}</template>
+          </button>
         </div>
-        <p v-if="flight" class="num mt-0.5 text-xs font-semibold break-words text-ink-600 dark:text-ink-200">
-          <span class="mr-1" aria-hidden="true">✈️</span>{{ flight }}
-        </p>
-        <p v-if="spot.address" class="mt-0.5 flex items-start gap-1 text-xs text-ink-400 dark:text-ink-300">
-          <MapPin class="mt-0.5 size-3 shrink-0" /><span class="min-w-0 break-words">{{ spot.address }}</span>
-        </p>
-        <p v-if="spot.note" class="mt-1 line-clamp-3 text-sm whitespace-pre-line text-ink-600 dark:text-ink-200">{{ spot.note }}</p>
-      </button>
-      <!-- 地圖固定大小、垂直置中，卡片高度只跟著內容行數變 -->
+      </div>
+      <!-- 拖曳與地圖以整張卡片（含下方那一列）垂直置中 -->
       <a
         v-if="mapUrl"
         :href="mapUrl"
@@ -91,58 +146,6 @@ const status = computed(() => {
         <Navigation class="size-5" />
       </a>
     </div>
-    <div v-if="status || showItems || expenses.length || wishes.length" class="flex flex-wrap items-center gap-x-1 gap-y-0.5 pb-0.5" :class="draggable ? 'ml-8' : 'ml-0.5'">
-      <button
-        v-if="status?.next"
-        type="button"
-        class="chip mx-1 whitespace-nowrap transition active:scale-95"
-        :class="status.cls"
-        :aria-label="`${spot.title}：${status.text}，點一下改成${status.next}`"
-        :title="`點一下改成「${status.next}」`"
-        @click="emit('booking')"
-      >
-        {{ status.text }}
-      </button>
-      <span v-else-if="status" class="mx-1 whitespace-nowrap" :class="status.cls">{{ status.text }}</span>
-      <template v-if="showItems">
-        <button
-          v-if="items.length"
-          type="button"
-          class="flex items-center gap-1 rounded-lg px-1.5 py-1 text-xs font-semibold text-ink-500 hover:bg-ink-50 dark:text-ink-300 dark:hover:bg-ink-800"
-          :aria-expanded="open"
-          @click="expanded.toggle(spot.id)"
-        >
-          <ChevronRight class="size-3.5 transition" :class="open && 'rotate-90'" />
-          {{ items.length }} 個{{ words.noun }}・{{ words.done }} {{ doneCount }}
-        </button>
-        <button
-          v-else
-          type="button"
-          class="flex items-center gap-1 rounded-lg px-1.5 py-1 text-xs font-semibold text-ink-400 hover:bg-ink-50 dark:hover:bg-ink-800"
-          @click="addFirst"
-        >
-          <Plus class="size-3.5" />加入{{ words.noun }}<template v-if="!expenses.length">（一區逛好幾間時用）</template>
-        </button>
-      </template>
-      <button
-        v-if="expenses.length"
-        type="button"
-        class="num flex items-center gap-1 rounded-lg px-1.5 py-1 text-xs font-semibold text-ink-500 hover:bg-ink-50 dark:text-ink-300 dark:hover:bg-ink-800"
-        :aria-label="`${spot.title} 的旅費：${expenses.length} 筆，共 ${formatMoney(spent)}`"
-        @click="emit('expenses')"
-      >
-        <ReceiptText class="size-3.5" />{{ formatMoney(spent) }}・{{ expenses.length }} 筆
-      </button>
-      <button
-        v-if="wishes.length"
-        type="button"
-        class="flex items-center gap-1 rounded-lg px-1.5 py-1 text-xs font-semibold text-ink-500 hover:bg-ink-50 dark:text-ink-300 dark:hover:bg-ink-800"
-        :aria-label="`${spot.title} 的代購：${wishes.length} 項，待買 ${wishTodo} 項`"
-        @click="emit('wishes')"
-      >
-        <ShoppingBag class="size-3.5" />代購 {{ wishes.length }}<template v-if="wishTodo">・待買 {{ wishTodo }}</template>
-      </button>
-    </div>
-    <SpotItems v-if="showItems && open && items.length" class="ml-1" :spot="spot" :items="items" @edit="emit('item-edit', $event)" />
+    <SpotItems v-if="showItems && open && items.length" class="ml-1" :spot="spot" :items="items" @edit="emit('item-edit', $event)" @expenses="emit('item-expenses', $event)" />
   </div>
 </template>

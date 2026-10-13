@@ -269,6 +269,9 @@ alter table public.spots add column if not exists arr_day_offset int not null de
 alter table public.expenses
   add column if not exists twd_amount int check (twd_amount > 0 and twd_amount < 100000000);
 
+-- 記在行程底下某個子項目（地點、店家）的旅費；子項目一定屬於 spot_id 那個行程，刪掉子項目時只清這欄
+alter table public.expenses add column if not exists item_id uuid;
+
 -- 代購記帳時對應的代購清單項目；項目刪掉時只清這欄，代購紀錄照常
 alter table public.expense_proxies add column if not exists wish_item_id uuid;
 
@@ -284,6 +287,14 @@ begin
       (category not in ('shop', 'other') or booking is null) and (category <> 'stay' or booking is distinct from 'none'));
   end if;
   -- 新台幣的旅費本來就是實際金額，不需要另外填
+  -- 外鍵帶 spot_id，子項目只能是這筆旅費所屬行程底下的；行程刪掉時子項目跟著刪，item_id 也一起清掉
+  if not exists (select 1 from pg_constraint where conname = 'spot_items_id_spot_trip_key') then
+    alter table public.spot_items add constraint spot_items_id_spot_trip_key unique (id, spot_id, trip_id);
+  end if;
+  if not exists (select 1 from pg_constraint where conname = 'expenses_item_fkey') then
+    alter table public.expenses add constraint expenses_item_fkey
+      foreign key (item_id, spot_id, trip_id) references public.spot_items (id, spot_id, trip_id) on delete set null (item_id);
+  end if;
   if not exists (select 1 from pg_constraint where conname = 'expense_proxies_wish_item_fkey') then
     alter table public.expense_proxies add constraint expense_proxies_wish_item_fkey
       foreign key (wish_item_id, trip_id) references public.wish_items (id, trip_id) on delete set null (wish_item_id);
@@ -383,6 +394,24 @@ $$;
 drop trigger if exists check_trip_currency on public.trips;
 create trigger check_trip_currency before update of currency on public.trips
   for each row execute function public.check_trip_currency();
+
+-- 刪行程時旅費的 spot_id 先被清掉，子項目再被刪時已經比對不到這筆，item_id 要在這裡跟著清
+create or replace function public.clear_item_without_spot()
+returns trigger
+language plpgsql
+set search_path = ''
+as $$
+begin
+  if new.spot_id is null then
+    new.item_id := null;
+  end if;
+  return new;
+end;
+$$;
+
+drop trigger if exists clear_item_without_spot on public.expenses;
+create trigger clear_item_without_spot before insert or update of spot_id, item_id on public.expenses
+  for each row execute function public.clear_item_without_spot();
 
 -- 旅程至少要留一位成員，否則沒人看得到它；整趟旅程刪除時連帶刪旅伴不受限
 -- security definer：移出自己之後，以自己的身分已經讀不到這趟旅程的旅伴
@@ -807,6 +836,10 @@ begin
      or jsonb_array_length(p_shares) + jsonb_array_length(p_proxies) = 0 then
     raise exception 'at least one share or proxy required' using errcode = '22023';
   end if;
+  -- 複合外鍵有一欄是 null 時不檢查，沒有行程卻帶子項目要在這裡擋
+  if nullif(p_expense ->> 'item_id', '') is not null and nullif(p_expense ->> 'spot_id', '') is null then
+    raise exception 'item needs its spot' using errcode = '22023';
+  end if;
   v_proxy_sum := coalesce((select sum((x ->> 'amount')::numeric) from jsonb_array_elements(p_proxies) x), 0);
   if v_mode = 'custom' and (
        exists (select 1 from jsonb_array_elements(p_shares) s where s ->> 'amount' is null)
@@ -820,16 +853,17 @@ begin
   end if;
 
   if v_id is null then
-    insert into public.expenses (trip_id, title, amount, currency, payer_id, split_mode, spent_on, spot_id, note, twd_amount)
+    insert into public.expenses (trip_id, title, amount, currency, payer_id, split_mode, spent_on, spot_id, item_id, note, twd_amount)
     values (p_trip, btrim(p_expense ->> 'title'), v_amount, v_currency, (p_expense ->> 'payer_id')::uuid, v_mode,
             nullif(p_expense ->> 'spent_on', '')::date, nullif(p_expense ->> 'spot_id', '')::uuid,
-            coalesce(p_expense ->> 'note', ''), (p_expense ->> 'twd_amount')::int)
+            nullif(p_expense ->> 'item_id', '')::uuid, coalesce(p_expense ->> 'note', ''), (p_expense ->> 'twd_amount')::int)
     returning id into v_id;
   else
     update public.expenses
        set title = btrim(p_expense ->> 'title'), amount = v_amount, currency = v_currency,
            payer_id = (p_expense ->> 'payer_id')::uuid, split_mode = v_mode,
            spent_on = nullif(p_expense ->> 'spent_on', '')::date, spot_id = nullif(p_expense ->> 'spot_id', '')::uuid,
+           item_id = nullif(p_expense ->> 'item_id', '')::uuid,
            note = coalesce(p_expense ->> 'note', ''), twd_amount = (p_expense ->> 'twd_amount')::int
      where id = v_id and trip_id = p_trip and version = (p_expense ->> 'version')::int
     returning id into v_found;
@@ -875,6 +909,7 @@ revoke execute on function public.bump_version() from public, anon, authenticate
 revoke execute on function public.check_trip_currency() from public, anon, authenticated;
 revoke execute on function public.keep_one_member() from public, anon, authenticated;
 revoke execute on function public.limit_wish_photos() from public, anon, authenticated;
+revoke execute on function public.clear_item_without_spot() from public, anon, authenticated;
 revoke execute on function public.sync_member_name() from public, anon, authenticated;
 revoke execute on function public.hash_account_pin(text, text) from public, anon, authenticated;
 revoke execute on function public.attempt_account_pin(uuid, text) from public, anon, authenticated;

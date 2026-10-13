@@ -12,6 +12,7 @@ function expense(over: Partial<Expense> & Pick<Expense, 'id' | 'amount' | 'payer
     split_mode: 'even',
     spent_on: null,
     spot_id: null,
+    item_id: null,
     note: '',
     twd_amount: null,
     version: 1,

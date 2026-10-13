@@ -14,6 +14,7 @@ import { dayDate, formatDate, todayYmd } from '@/lib/format'
 import { currencyDigits, currencyInfo, formatMoney, formatRate, fromMinor, MAX_AMOUNT, parseAmount, parseSum, toMinor, toTwd } from '@/lib/money'
 import { customRemaining, expenseDues } from '@/lib/split'
 import { wishLabel } from '@/lib/wish'
+import { itemWords } from '@/lib/category'
 
 const props = defineProps<{
   open: boolean
@@ -21,6 +22,8 @@ const props = defineProps<{
   /** 從行程記一筆時帶入的預設值 */
   preset?: {
     spot_id?: Id | null
+    /** 行程底下的子項目（地點、店家） */
+    item_id?: Id | null
     spent_on?: string | null
     title?: string
     /** 從代購清單記帳時要帶進代購列的項目 */
@@ -44,6 +47,7 @@ const form = reactive({
   payer: '' as Id,
   date: '',
   spot: '' as Id,
+  item: '' as Id,
   note: '',
   mode: 'even' as SplitMode,
   checked: [] as Id[],
@@ -81,6 +85,7 @@ function fill(e: Expense | null | undefined) {
     payer: e?.payer_id ?? store.me?.id ?? people.value[0]?.id ?? '',
     date: e ? (e.spent_on ?? '') : (props.preset?.spent_on ?? defaultDate()),
     spot: e?.spot_id ?? props.preset?.spot_id ?? '',
+    item: e?.item_id ?? props.preset?.item_id ?? '',
     note: e?.note ?? '',
     // 從代購清單記的多半整筆都是代購或各買各的，用指定金額比較好分
     mode: e?.split_mode ?? (wishes.length ? 'custom' : 'even'),
@@ -212,6 +217,16 @@ const spotOptions = computed(() => {
     .map((s) => ({ value: s.id, label: `${dayOf(s) === Infinity ? '口袋' : `D${s.day}`} ${s.title}` }))
 })
 
+// 選了有子項目的行程才能再選地點或店家；換行程時清掉不屬於它的子項目
+const itemOptions = computed(() => (form.spot ? (store.itemsBySpot.get(form.spot) ?? []) : []))
+const itemNoun = computed(() => itemWords(store.data?.spots.find((s) => s.id === form.spot)?.category ?? 'other').noun)
+watch(
+  () => form.spot,
+  () => {
+    if (form.item && !itemOptions.value.some((i) => i.id === form.item)) form.item = ''
+  },
+)
+
 const dateOptions = computed(() => Array.from({ length: store.dayCount }, (_, i) => dayDate(trip.value, i + 1)))
 
 async function submit() {
@@ -225,6 +240,7 @@ async function submit() {
     split_mode: form.mode,
     spent_on: form.date || null,
     spot_id: form.spot || null,
+    item_id: form.spot && form.item ? form.item : null,
     note: form.note.trim(),
     twd_amount: foreign.value ? charged.value : null,
   }
@@ -443,6 +459,13 @@ async function remove() {
         <select id="exp-spot" v-model="form.spot" class="input">
           <option value="">不指定</option>
           <option v-for="s in spotOptions" :key="s.value" :value="s.value">{{ s.label }}</option>
+        </select>
+      </div>
+      <div v-if="itemOptions.length">
+        <label class="label" for="exp-item">哪個{{ itemNoun }}（選填）</label>
+        <select id="exp-item" v-model="form.item" class="input">
+          <option value="">不指定</option>
+          <option v-for="it in itemOptions" :key="it.id" :value="it.id">{{ it.title }}</option>
         </select>
       </div>
       <div>
