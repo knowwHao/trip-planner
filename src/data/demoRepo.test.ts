@@ -109,7 +109,7 @@ describe('DemoRepo', () => {
   it('代購清單：只有自己看得到、照片最多 2 張、記帳後變已買、刪項目只清連結', async () => {
     const { repo, a, b } = await setup()
     const [pa] = (await repo.loadTrip()).participants.map((p) => p.id)
-    const w = await repo.createWishItem({ recipient: '媽媽', title: '面膜', qty: 2, note: '', url: '', spot_id: null, status: 'todo', sort_key: 1 })
+    const w = await repo.createWishItem({ recipient: '媽媽', title: '面膜', qty: 2, note: '', url: '', spot_id: null, item_id: null, status: 'todo', sort_key: 1 })
     expect((await repo.loadTrip()).wishItems.map((x) => x.title)).toEqual(['面膜'])
     repo.setSession(b)
     expect((await repo.loadTrip()).wishItems).toEqual([])
@@ -122,7 +122,7 @@ describe('DemoRepo', () => {
     expect(await repo.getWishPhoto(p1.id, 'full')).toBe(jpg.full)
     // 打勾、排地點不加版本；改內容加版本
     await repo.setWishStatus(w.id, 'unavailable')
-    await repo.setWishSpot([w.id], null)
+    await repo.setWishPlace([w.id], null)
     await repo.updateWishItem(w.id, 1, { note: '藍色' })
     await expect(repo.updateWishItem(w.id, 1, { note: '舊的' })).rejects.toBeInstanceOf(ConflictError)
     const base = { title: '藥妝', amount: 1000, currency: 'JPY', payer_id: pa, spent_on: null, spot_id: null, item_id: null, note: '', twd_amount: null }
@@ -158,6 +158,24 @@ describe('DemoRepo', () => {
     const byId = new Map((await repo.loadTrip()).expenses.map((e) => [e.id, e]))
     expect(byId.get(e1)).toMatchObject({ spot_id: ginza.id, item_id: null })
     expect(byId.get(e2)).toMatchObject({ spot_id: null, item_id: null })
+  })
+
+  it('代購排到店家：店家要屬於那個行程，刪店家只清店家、刪行程一起清', async () => {
+    const { repo } = await setup()
+    const ginza = await repo.createSpot({ ...spotBase, category: 'shop', title: '銀座', sort_key: 1 })
+    const shibuya = await repo.createSpot({ ...spotBase, category: 'shop', title: '澀谷', sort_key: 2 })
+    const mk = (spot: string, title: string) => repo.createItem({ spot_id: spot, title, address: '', map_url: '', note: '', sort_key: 1 })
+    const uniqlo = await mk(ginza.id, 'UNIQLO')
+    const parco = await mk(shibuya.id, 'PARCO')
+    const w = await repo.createWishItem({ recipient: '媽媽', title: '襪子', qty: 1, note: '', url: '', spot_id: null, item_id: null, status: 'todo', sort_key: 1 })
+    await expect(repo.setWishPlace([w.id], ginza.id, parco.id)).rejects.toThrow()
+    await repo.setWishPlace([w.id], ginza.id, uniqlo.id)
+    expect((await repo.loadTrip()).wishItems[0]).toMatchObject({ spot_id: ginza.id, item_id: uniqlo.id, version: 1 })
+    await repo.deleteItem(uniqlo.id)
+    expect((await repo.loadTrip()).wishItems[0]).toMatchObject({ spot_id: ginza.id, item_id: null })
+    await repo.setWishPlace([w.id], shibuya.id, parco.id)
+    await repo.deleteSpot(shibuya.id)
+    expect((await repo.loadTrip()).wishItems[0]).toMatchObject({ spot_id: null, item_id: null })
   })
 
   it('景點改內容加版本、搬動不加，舊版本更新是衝突', async () => {

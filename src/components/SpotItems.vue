@@ -1,12 +1,13 @@
 <script setup lang="ts">
 import { computed, onBeforeUnmount, onMounted, ref } from 'vue'
 import Sortable from 'sortablejs'
-import { Check, GripVertical, Navigation, Plus, ReceiptText } from 'lucide-vue-next'
+import { Check, GripVertical, Navigation, Plus, ReceiptText, ShoppingBag } from 'lucide-vue-next'
 import type { Spot, SpotItem } from '@/types'
 import { useTripStore } from '@/stores/trip'
 import { googleMapsUrl } from '@/lib/maps'
 import { itemWords } from '@/lib/category'
 import { formatMoney } from '@/lib/money'
+import { wishLabel } from '@/lib/wish'
 import { expenseTwd } from '@/lib/split'
 import { evenKeys, keyBetween } from '@/lib/order'
 import { errorMessage, toast } from '@/composables/useToast'
@@ -101,6 +102,9 @@ async function move(id: string, index: number) {
         <button type="button" class="min-w-0 flex-1 rounded-lg px-1.5 py-1.5 text-left" @click="emit('edit', item)">
           <span class="block text-sm font-semibold break-words" :class="item.done && 'text-ink-400 line-through decoration-ink-300'">{{ item.title }}</span>
           <span v-if="item.note" class="block text-xs whitespace-pre-line text-ink-500 dark:text-ink-300">{{ item.note }}</span>
+          <span v-if="store.wishByItem.get(item.id)?.length" class="mt-0.5 flex items-center gap-1 text-xs text-sea-700 dark:text-sea-300">
+            <ShoppingBag class="size-3 shrink-0" /><span class="min-w-0 truncate">代購：{{ store.wishByItem.get(item.id)!.map((w) => wishLabel(w)).join('、') }}</span>
+          </span>
         </button>
         <button
           v-if="spentOn(item).count"

@@ -70,7 +70,7 @@ npm run build        # vue-tsc 型別檢查 + vite build 到 dist/
   行程的旅費：`SpotExpensesModal.vue`（依 `expenses.spot_id`，帶 `item` 時只列 `expenses.item_id` 那個子項目的；從行程或子項目記帳以 `ExpenseFormModal` 的 `preset` 帶入行程、子項目與日期）
 - 旅費：`src/views/ExpensesView.vue`（含代購待收）、`src/components/ExpenseFormModal.vue`（分攤與代購；`preset` 帶行程時列出這個行程的代購清單項目，帶 `wish` 時直接變成代購列）、`TransferModal.vue`
 - 代購清單：`src/views/WishListView.vue`（`/trips/:tripId/shopping`，分組、篩選、勾選記帳）、`src/components/WishItemModal.vue`（編輯與照片）、`SpotWishModal.vue`（行程卡片的代購）、
-  `WishThumb.vue`／`PhotoViewer.vue`；購物行程的「要在這裡買嗎」在 `SpotFormModal.vue`；`src/lib/wish.ts`、`src/lib/image.ts`
+  `WishThumb.vue`／`PhotoViewer.vue`；購物行程的「要在這裡買嗎」在 `SpotFormModal.vue`、店家的「要在這間買嗎」在 `ItemFormModal.vue`（`wish_items.item_id`）；`src/lib/wish.ts`、`src/lib/image.ts`
 - `supabase/schema.sql`：資料表、RLS、`current_account_id()`／`my_trip_ids()`、`bump_version()`、`create_trip()`／`add_trip_member()`／`remove_trip_member()`／`save_expense()`、帳號函式
 - `.github/workflows/deploy.yml`：測試、打包、部署 Pages；`keepalive.yml`：每日不帶登入憑證 GET trips，預期 `[]`
 - `vite.config.ts`：`base` 依 `VITE_BASE`／`GITHUB_REPOSITORY` 決定、PWA manifest

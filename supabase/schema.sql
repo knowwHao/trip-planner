@@ -272,6 +272,9 @@ alter table public.expenses
 -- 記在行程底下某個子項目（地點、店家）的旅費；子項目一定屬於 spot_id 那個行程，刪掉子項目時只清這欄
 alter table public.expenses add column if not exists item_id uuid;
 
+-- 代購項目打算在哪間店（行程底下的子項目）買；規則與 expenses.item_id 相同
+alter table public.wish_items add column if not exists item_id uuid;
+
 -- 代購記帳時對應的代購清單項目；項目刪掉時只清這欄，代購紀錄照常
 alter table public.expense_proxies add column if not exists wish_item_id uuid;
 
@@ -293,6 +296,10 @@ begin
   end if;
   if not exists (select 1 from pg_constraint where conname = 'expenses_item_fkey') then
     alter table public.expenses add constraint expenses_item_fkey
+      foreign key (item_id, spot_id, trip_id) references public.spot_items (id, spot_id, trip_id) on delete set null (item_id);
+  end if;
+  if not exists (select 1 from pg_constraint where conname = 'wish_items_item_fkey') then
+    alter table public.wish_items add constraint wish_items_item_fkey
       foreign key (item_id, spot_id, trip_id) references public.spot_items (id, spot_id, trip_id) on delete set null (item_id);
   end if;
   if not exists (select 1 from pg_constraint where conname = 'expense_proxies_wish_item_fkey') then
@@ -318,6 +325,7 @@ create index if not exists expense_proxies_trip_idx on public.expense_proxies (t
 create index if not exists expense_proxies_expense_idx on public.expense_proxies (expense_id);
 create index if not exists expense_proxies_wish_idx on public.expense_proxies (wish_item_id) where wish_item_id is not null;
 create index if not exists wish_items_trip_owner_idx on public.wish_items (trip_id, owner_id);
+create index if not exists wish_items_item_idx on public.wish_items (item_id) where item_id is not null;
 create index if not exists wish_photos_item_idx on public.wish_photos (item_id);
 
 -- ---------- 版本號 ----------
@@ -352,10 +360,10 @@ begin
 end;
 $$;
 
--- 代購項目打勾（status）與排地點（spot_id）不算內容修改
+-- 代購項目打勾（status）與排地點（spot_id、item_id）不算內容修改
 drop trigger if exists bump_version on public.wish_items;
 create trigger bump_version before update on public.wish_items
-  for each row execute function public.bump_version('status', 'spot_id');
+  for each row execute function public.bump_version('status', 'spot_id', 'item_id');
 
 -- 一個代購項目最多 2 張照片，與前端的上限一致
 create or replace function public.limit_wish_photos()
@@ -395,7 +403,7 @@ drop trigger if exists check_trip_currency on public.trips;
 create trigger check_trip_currency before update of currency on public.trips
   for each row execute function public.check_trip_currency();
 
--- 刪行程時旅費的 spot_id 先被清掉，子項目再被刪時已經比對不到這筆，item_id 要在這裡跟著清
+-- 刪行程時旅費與代購項目的 spot_id 先被清掉，子項目再被刪時已經比對不到這些列，item_id 要在這裡跟著清
 create or replace function public.clear_item_without_spot()
 returns trigger
 language plpgsql
@@ -409,9 +417,17 @@ begin
 end;
 $$;
 
-drop trigger if exists clear_item_without_spot on public.expenses;
-create trigger clear_item_without_spot before insert or update of spot_id, item_id on public.expenses
-  for each row execute function public.clear_item_without_spot();
+do $$
+declare t text;
+begin
+  foreach t in array array['expenses', 'wish_items'] loop
+    execute format('drop trigger if exists clear_item_without_spot on public.%I', t);
+    execute format(
+      'create trigger clear_item_without_spot before insert or update of spot_id, item_id on public.%I
+         for each row execute function public.clear_item_without_spot()', t);
+  end loop;
+end;
+$$;
 
 -- 旅程至少要留一位成員，否則沒人看得到它；整趟旅程刪除時連帶刪旅伴不受限
 -- security definer：移出自己之後，以自己的身分已經讀不到這趟旅程的旅伴

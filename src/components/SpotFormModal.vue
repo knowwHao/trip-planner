@@ -125,8 +125,8 @@ async function placeWishes(spotId: Id) {
   const drop = wishChoices.value.filter((w) => !wishPicked.value.has(w.id) && w.spot_id === spotId).map((w) => w.id)
   if (!add.length && !drop.length) return
   await store.mutate(async () => {
-    await repo.setWishSpot(add, spotId)
-    await repo.setWishSpot(drop, null)
+    await repo.setWishPlace(add, spotId)
+    await repo.setWishPlace(drop, null)
   })
 }
 

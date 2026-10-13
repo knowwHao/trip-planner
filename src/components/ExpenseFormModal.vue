@@ -131,7 +131,11 @@ const wishById = computed(() => new Map(store.wishItems.map((w) => [w.id, w])))
 const spotWishes = computed(() => {
   const spotId = props.preset?.spot_id
   if (base.value || !spotId) return []
-  return (store.wishBySpot.get(spotId) ?? []).filter((w) => w.status !== 'unavailable' && !store.wishRecords.has(w.id))
+  // 從店家記帳時只列排在這間店、或排在這個行程但還沒指定店家的
+  const itemId = props.preset?.item_id
+  return (store.wishBySpot.get(spotId) ?? []).filter(
+    (w) => w.status !== 'unavailable' && !store.wishRecords.has(w.id) && (!itemId || !w.item_id || w.item_id === itemId),
+  )
 })
 
 function toggleWish(w: WishItem) {
