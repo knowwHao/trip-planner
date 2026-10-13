@@ -29,7 +29,7 @@ const spotBase: Omit<SpotInput, 'title' | 'sort_key'> = {
   arr_day_offset: 0,
 }
 
-/** 甲甲建立大阪之旅，乙乙一起加入，丙丙是只記帳的旅伴 */
+/** 甲甲建立大阪之旅，乙乙一起加入 */
 async function setup() {
   const repo = new DemoRepo(emptyDb())
   const b = await repo.registerAccount('乙乙', '222222')
@@ -37,8 +37,7 @@ async function setup() {
   repo.setSession(a)
   const tripId = await repo.createTrip(
     { name: '大阪', start_date: '2026-11-01', end_date: '2026-11-03', currency: 'JPY', fx_rate: 0.2 },
-    [b.id],
-    ['丙丙', ' 丙丙 ', '', '甲甲'],
+    [b.id, a.id],
   )
   repo.setTrip(tripId)
   return { repo, tripId, a, b }
@@ -57,13 +56,12 @@ describe('DemoRepo', () => {
     await expect(repo.createSpot({ ...spotBase, title: 'x', sort_key: 1 })).rejects.toBeInstanceOf(NoAccessError)
   })
 
-  it('建立者排第一、勾選的成員、只記帳的旅伴去重', async () => {
+  it('建立者排第一、接著是勾選的成員，自己不重複', async () => {
     const { repo, a, b } = await setup()
     const ps = (await repo.loadTrip()).participants
     expect(ps.map((p) => [p.name, p.account_id])).toEqual([
       ['甲甲', a.id],
       ['乙乙', b.id],
-      ['丙丙', null],
     ])
     repo.setSession(b)
     expect((await repo.listTrips()).map((t) => t.name)).toEqual(['大阪'])
@@ -72,10 +70,9 @@ describe('DemoRepo', () => {
   it('加人、移出、最後一位成員不能移出', async () => {
     const { repo, b } = await setup()
     const c = await repo.registerAccount('丙丙', '444444')
-    const [pa, pb, pc] = (await repo.loadTrip()).participants
-    // 同名只記帳的旅伴直接換成成員
+    const [pa, pb] = (await repo.loadTrip()).participants
     await repo.addMember(c.id)
-    expect((await repo.loadTrip()).participants.find((p) => p.id === pc.id)?.account_id).toBe(c.id)
+    const pc = (await repo.loadTrip()).participants.find((p) => p.account_id === c.id)!
     await repo.removeMember(pb.id)
     expect((await repo.loadTrip()).participants.find((p) => p.id === pb.id)).toMatchObject({ name: '乙乙', account_id: null })
     repo.setSession(b)
@@ -88,18 +85,25 @@ describe('DemoRepo', () => {
     const d = await repo.registerAccount('老王', '555555')
     await repo.addMember(d.id, pa.id)
     expect((await repo.loadTrip()).participants.find((p) => p.id === pa.id)).toMatchObject({ name: '老王', account_id: d.id })
-    const pd = (await repo.loadTrip()).participants.find((p) => p.id === pb.id)!
-    await repo.renameParticipant(pd.id, pd.version, '阿乙')
-    await repo.addMember(b.id, pb.id)
+    // 已移出的乙乙用名字比對接回原本的紀錄
+    await repo.addMember(b.id)
     expect((await repo.loadTrip()).participants.find((p) => p.id === pb.id)).toMatchObject({ name: '乙乙', account_id: b.id })
   })
 
-  it('成員的名字固定是帳號名稱，只記帳的旅伴可以改名', async () => {
+  it('代購：存進去、修改時整批取代、刪旅費連帶刪除', async () => {
     const { repo } = await setup()
-    const [pa, , pc] = (await repo.loadTrip()).participants
-    await repo.renameParticipant(pa.id, pa.version, '暱稱')
-    await repo.renameParticipant(pc.id, pc.version, '老丙')
-    expect((await repo.loadTrip()).participants.map((p) => p.name)).toEqual(['甲甲', '乙乙', '老丙'])
+    const [a, b] = (await repo.loadTrip()).participants.map((p) => p.id)
+    const base = { title: '藥妝', amount: 10000, currency: 'JPY', payer_id: a, spent_on: null, spot_id: null, note: '', twd_amount: null }
+    const id = await repo.saveExpense({ ...base, split_mode: 'custom' }, [{ participant_id: b, amount: 6000 }], [{ name: ' 媽媽 ', amount: 4000 }])
+    expect((await repo.loadTrip()).proxies.map((x) => [x.name, x.amount])).toEqual([['媽媽', 4000]])
+    // 指定金額加代購要等於總額；平分時代購要小於總額，沒勾人時要等於總額
+    await expect(repo.saveExpense({ ...base, split_mode: 'custom' }, [{ participant_id: b, amount: 6000 }], [])).rejects.toThrow()
+    await expect(repo.saveExpense({ ...base, split_mode: 'even' }, [{ participant_id: b, amount: null }], [{ name: '媽媽', amount: 10000 }])).rejects.toThrow()
+    await expect(repo.saveExpense({ ...base, split_mode: 'even' }, [], [{ name: '媽媽', amount: 6000 }])).rejects.toThrow()
+    await repo.saveExpense({ ...base, id, version: 1, split_mode: 'even' }, [], [{ name: '媽媽', amount: 6000 }, { name: '阿姨', amount: 4000 }])
+    expect((await repo.loadTrip()).proxies.map((x) => x.name)).toEqual(['媽媽', '阿姨'])
+    await repo.deleteExpense(id)
+    expect((await repo.loadTrip()).proxies).toEqual([])
   })
 
   it('景點改內容加版本、搬動不加，舊版本更新是衝突', async () => {
@@ -129,21 +133,25 @@ describe('DemoRepo', () => {
 
   it('費用：指定金額要加總等於總額、有紀錄的旅伴不能刪、有外幣費用不能換幣別', async () => {
     const { repo } = await setup()
-    const [a, , c] = (await repo.loadTrip()).participants.map((p) => p.id)
+    const [a, c] = (await repo.loadTrip()).participants.map((p) => p.id)
     const base = { title: '晚餐', amount: 3000, currency: 'JPY', payer_id: a, spent_on: null, spot_id: null, note: '', twd_amount: null }
-    await expect(repo.saveExpense({ ...base, split_mode: 'custom' }, [{ participant_id: a, amount: 1000 }])).rejects.toThrow()
-    const id = await repo.saveExpense({ ...base, split_mode: 'custom' }, [
-      { participant_id: a, amount: 1000 },
-      { participant_id: c, amount: 2000 },
-    ])
-    await expect(repo.saveExpense({ ...base, id, version: 2, split_mode: 'even' }, [{ participant_id: a, amount: null }])).rejects.toBeInstanceOf(
+    await expect(repo.saveExpense({ ...base, split_mode: 'custom' }, [{ participant_id: a, amount: 1000 }], [])).rejects.toThrow()
+    const id = await repo.saveExpense(
+      { ...base, split_mode: 'custom' },
+      [
+        { participant_id: a, amount: 1000 },
+        { participant_id: c, amount: 2000 },
+      ],
+      [],
+    )
+    await expect(repo.saveExpense({ ...base, id, version: 2, split_mode: 'even' }, [{ participant_id: a, amount: null }], [])).rejects.toBeInstanceOf(
       ConflictError,
     )
     await expect(repo.deleteParticipant(c)).rejects.toBeInstanceOf(InUseError)
     const data = await repo.loadTrip()
     await expect(repo.updateTrip(data.trip.version, { currency: 'KRW', fx_rate: 0.02 })).rejects.toThrow('換幣別')
-    // 3000 日圓 × 0.2：甲甲付 600，自己 200、丙丙 400
-    expect(Object.fromEntries(netBalances(data))).toMatchObject({ [a]: 400, [c]: -400 })
+    // 3000 日圓 × 0.2：甲甲付 600，自己 200、乙乙 400
+    expect(Object.fromEntries(netBalances(data))).toEqual({ [a]: 400, [c]: -400 })
   })
 
   it('子項目：打勾不加版本、改內容加版本、刪行程連帶刪除', async () => {
@@ -186,14 +194,19 @@ describe('DemoRepo', () => {
     expect(await repo.listTrips()).toEqual([])
   })
 
-  it('示範旅程：登入的人是成員，帳加總為 0', async () => {
+  it('示範旅程：登入的人與示範帳號都是成員，帳加總為 0', async () => {
     const repo = new DemoRepo(emptyDb())
     const me = await repo.registerAccount('小華', '123456')
+    const mei = await repo.registerAccount('小美', '654321')
     repo.setSession(me)
     repo.setTrip(repo.createDemoTrip())
     const data = await repo.loadTrip()
     expect(data.participants.map((p) => p.name)).toEqual(['小華', '阿傑', '小美', '小明'])
     expect(data.participants[0].account_id).toBe(me.id)
+    // 已註冊的名字直接用那個帳號
+    expect(data.participants[2].account_id).toBe(mei.id)
+    expect(data.participants.every((p) => p.account_id)).toBe(true)
+    expect(data.proxies.map((x) => x.name)).toEqual(['媽媽'])
     const bal = netBalances(data)
     expect([...bal.values()].reduce((s, v) => s + v, 0)).toBe(0)
   })

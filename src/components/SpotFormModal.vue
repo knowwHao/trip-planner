@@ -12,7 +12,7 @@ import { errorMessage, toast } from '@/composables/useToast'
 import { dayDate, formatDate, formatTime } from '@/lib/format'
 import { googleMapsUrl, safeUrl } from '@/lib/maps'
 import { keyAfter } from '@/lib/order'
-import { bookingForCategory, bookingOptions, CATEGORIES, defaultBooking, itemWords } from '@/lib/category'
+import { bookingForCategory, categoryInfo, CATEGORIES, defaultBooking, itemWords, remindLabel } from '@/lib/category'
 import { FLIGHT_NO_RE, normalizeFlightNo } from '@/lib/flight'
 
 const props = defineProps<{
@@ -85,8 +85,35 @@ const dayOptions = computed(() =>
   Array.from({ length: store.dayCount }, (_, i) => ({ value: String(i + 1), label: `第 ${i + 1} 天・${formatDate(dayDate(trip.value, i + 1))}` })),
 )
 
-const statusOptions = computed(() => bookingOptions(form.category))
+const remind = computed(() => remindLabel(form.category))
+const bookingTexts = computed(() => categoryInfo(form.category).booking)
+const walkInText = computed(() => categoryInfo(form.category).walkIn ?? null)
+/** 提醒開關：打開是「還沒」或「已完成」，關掉存 null（餐廳另外可以標現場排隊） */
+const remindOn = computed({
+  get: () => form.booking === 'todo' || form.booking === 'done',
+  set: (on: boolean) => (form.booking = on ? 'todo' : null),
+})
 const itemCount = computed(() => (base.value ? (store.itemsBySpot.get(base.value.id)?.length ?? 0) : 0))
+// 一個行程底下掛多個地點只有景點（一區好幾個點）和購物（一區好幾間店）用得到
+const canAddItems = computed(() => form.category === 'sight' || form.category === 'shop')
+
+const titleInput = ref<HTMLInputElement | null>(null)
+
+/** 交通的名稱常是「東京 → 京都」，手機鍵盤不好打箭頭，在游標處插入 */
+function insertArrow() {
+  const el = titleInput.value
+  const at = el?.selectionStart ?? form.title.length
+  const end = el?.selectionEnd ?? at
+  const before = form.title.slice(0, at).replace(/\s+$/, '')
+  const after = form.title.slice(end).replace(/^\s+/, '')
+  const arrow = `${before ? ' ' : ''}→ `
+  form.title = before + arrow + after
+  const caret = before.length + arrow.length
+  requestAnimationFrame(() => {
+    el?.focus()
+    el?.setSelectionRange(caret, caret)
+  })
+}
 
 const PLACEHOLDERS: Record<SpotCategory, string> = {
   sight: '例如：淺草寺',
@@ -207,26 +234,71 @@ async function remove() {
           </button>
         </div>
       </fieldset>
-      <fieldset v-if="statusOptions.length">
-        <legend class="label">預約狀態</legend>
-        <div class="grid rounded-2xl bg-ink-100 p-1 dark:bg-ink-800" :class="statusOptions.length === 3 ? 'grid-cols-3' : 'grid-cols-2'" role="radiogroup" aria-label="預約狀態">
+      <fieldset v-if="remind && bookingTexts">
+        <legend class="label">預約</legend>
+        <button
+          type="button"
+          role="switch"
+          :aria-checked="remindOn"
+          class="flex w-full items-center justify-between gap-3 rounded-2xl bg-ink-100 py-2.5 pr-2.5 pl-4 text-left dark:bg-ink-800"
+          @click="remindOn = !remindOn"
+        >
+          <span class="min-w-0">
+            <span class="block text-sm font-bold">{{ remind }}</span>
+            <span class="block text-xs text-ink-400">打開後卡片上會標示，也會列在「還沒訂」</span>
+          </span>
+          <span class="relative h-7 w-12 shrink-0 rounded-full transition" :class="remindOn ? 'bg-sea-400' : 'bg-ink-300 dark:bg-ink-600'">
+            <span class="absolute top-0.5 left-0.5 size-6 rounded-full bg-white shadow-soft transition" :class="remindOn && 'translate-x-5'" />
+          </span>
+        </button>
+        <div v-if="remindOn" class="mt-2 grid grid-cols-2 rounded-2xl bg-ink-100 p-1 dark:bg-ink-800" role="radiogroup" aria-label="預約狀態">
           <button
-            v-for="o in statusOptions"
-            :key="o.value"
+            v-for="v in ['todo', 'done'] as const"
+            :key="v"
             type="button"
             role="radio"
-            :aria-checked="form.booking === o.value"
+            :aria-checked="form.booking === v"
             class="rounded-xl py-2 text-sm font-bold transition"
-            :class="form.booking === o.value ? 'bg-white text-ink-900 shadow-soft dark:bg-ink-600 dark:text-white' : 'text-ink-400'"
-            @click="form.booking = o.value"
+            :class="form.booking === v ? 'bg-white text-ink-900 shadow-soft dark:bg-ink-600 dark:text-white' : 'text-ink-400'"
+            @click="form.booking = v"
           >
-            {{ o.label }}
+            {{ bookingTexts[v] }}
           </button>
         </div>
+        <label v-else-if="walkInText" class="mt-2 flex cursor-pointer items-center gap-2.5 px-1 text-sm">
+          <input
+            type="checkbox"
+            class="size-4 accent-sea-500"
+            :checked="form.booking === 'none'"
+            @change="form.booking = ($event.target as HTMLInputElement).checked ? 'none' : null"
+          />
+          <span><span class="font-semibold">{{ walkInText }}</span><span class="text-ink-400">（不用訂位，可能要排隊）</span></span>
+        </label>
       </fieldset>
       <div>
         <label class="label" for="spot-title">名稱</label>
-        <input id="spot-title" v-model="form.title" class="input" maxlength="80" :placeholder="PLACEHOLDERS[form.category]" autocomplete="off" />
+        <div class="flex gap-2">
+          <input
+            id="spot-title"
+            ref="titleInput"
+            v-model="form.title"
+            class="input min-w-0 flex-1"
+            maxlength="80"
+            :placeholder="PLACEHOLDERS[form.category]"
+            autocomplete="off"
+          />
+          <button
+            v-if="form.category === 'transport'"
+            type="button"
+            class="btn-outline shrink-0 px-4 text-lg"
+            aria-label="插入往右的箭頭"
+            title="插入 →"
+            @mousedown.prevent
+            @click="insertArrow"
+          >
+            →
+          </button>
+        </div>
         <p v-if="touched && errors.title" class="mt-1 text-xs text-rose-500">{{ errors.title }}</p>
       </div>
       <div class="grid grid-cols-[minmax(0,1fr)_7.5rem] gap-3">
@@ -310,7 +382,7 @@ async function remove() {
         <button type="button" class="btn-ghost -ml-2 text-rose-500" @click="remove"><Trash2 class="size-4" />刪除</button>
         <span class="flex-1" />
         <button type="button" class="btn-ghost" @click="emit('add-expense', base)"><ReceiptText class="size-4" />記一筆旅費</button>
-        <button type="button" class="btn-ghost -mr-2" @click="emit('add-item', base)">
+        <button v-if="canAddItems" type="button" class="btn-ghost -mr-2" @click="emit('add-item', base)">
           <ListPlus class="size-4" />新增{{ itemWords(form.category).noun }}（{{ itemCount }}）
         </button>
       </div>

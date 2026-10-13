@@ -6,7 +6,7 @@ import { AccountSessionError, ConflictError, NoAccessError, type ItemMove, type 
 import { RowMissingError } from '@/data/writeCheck'
 import { errorMessage } from '@/composables/useToast'
 import { tripDayCount } from '@/lib/format'
-import { netBalances, simplifyDebts, summaries } from '@/lib/split'
+import { netBalances, proxyCollections, simplifyDebts, summaries } from '@/lib/split'
 import { useAccountStore } from './account'
 
 /** checking：讀取中；noaccess：不是成員或旅程已刪除；error：連線失敗 */
@@ -222,6 +222,7 @@ export const useTripStore = defineStore('trip', () => {
           participants: data.value.participants,
           expenses: data.value.expenses,
           shares: data.value.shares,
+          proxies: data.value.proxies,
           transfers: data.value.transfers,
         }
       : null,
@@ -229,6 +230,8 @@ export const useTripStore = defineStore('trip', () => {
   const balances = computed(() => (splitData.value ? netBalances(splitData.value) : new Map<Id, number>()))
   const settlements = computed(() => simplifyDebts(balances.value))
   const memberSummaries = computed(() => (splitData.value ? summaries(splitData.value) : []))
+  /** 代購待收：付錢的人要跟不是旅伴的人收的錢 */
+  const proxyDebts = computed(() => (splitData.value ? proxyCollections(splitData.value) : []))
 
   function participantName(id: Id) {
     return participantMap.value.get(id)?.name ?? '（已移除）'
@@ -251,6 +254,7 @@ export const useTripStore = defineStore('trip', () => {
     balances,
     settlements,
     memberSummaries,
+    proxyDebts,
     open,
     close,
     load,

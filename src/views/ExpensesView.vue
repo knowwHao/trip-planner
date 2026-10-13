@@ -1,7 +1,7 @@
 <script setup lang="ts">
 import { computed, ref } from 'vue'
 import { RouterLink } from 'vue-router'
-import { ArrowRight, ArrowRightLeft, PartyPopper, Plus, ReceiptText, Trash2, UsersRound } from 'lucide-vue-next'
+import { ArrowRight, ArrowRightLeft, PartyPopper, Plus, ReceiptText, ShoppingBag, Trash2, UsersRound } from 'lucide-vue-next'
 import EmptyState from '@/components/EmptyState.vue'
 import ParticipantAvatar from '@/components/ParticipantAvatar.vue'
 import ExpenseFormModal from '@/components/ExpenseFormModal.vue'
@@ -13,14 +13,16 @@ import { confirmDialog } from '@/composables/useConfirm'
 import { errorMessage, toast } from '@/composables/useToast'
 import { formatDate } from '@/lib/format'
 import { formatMoney, formatRate } from '@/lib/money'
-import { expenseTwd, groupShares } from '@/lib/split'
+import { expenseTwd, groupProxies, groupShares } from '@/lib/split'
 
 const store = useTripStore()
 const trip = computed(() => store.trip!)
 const data = computed(() => store.data!)
 
-const total = computed(() => data.value.expenses.reduce((s, e) => s + expenseTwd(e, trip.value), 0))
+// 代購不算這趟旅程的花費，用每人代墊（已扣掉代購）加總
+const total = computed(() => store.memberSummaries.reduce((s, m) => s + m.paid, 0))
 const sharesByExpense = computed(() => groupShares(data.value.shares))
+const proxiesByExpense = computed(() => groupProxies(data.value.proxies))
 
 /** 依日期分組，新的在前；沒指定日期的放最後 */
 const groups = computed(() => {
@@ -40,7 +42,10 @@ const groups = computed(() => {
 
 function splitLabel(e: Expense) {
   const n = sharesByExpense.value.get(e.id)?.length ?? 0
-  return e.split_mode === 'custom' ? `${n} 人各付各的` : `${n} 人平分`
+  const proxies = proxiesByExpense.value.get(e.id) ?? []
+  const split = n ? (e.split_mode === 'custom' ? `${n} 人各付各的` : `${n} 人平分`) : ''
+  const proxy = proxies.length ? `幫${proxies.map((x) => x.name).join('、')}代購` : ''
+  return [split, proxy].filter(Boolean).join('・')
 }
 
 const transfers = computed(() =>
@@ -161,6 +166,20 @@ async function removeTransfer(id: Id, label: string) {
           <p class="mt-3 text-xs leading-relaxed text-ink-400">「要收／要付」已扣掉記下的轉帳；外幣用上面的匯率換成新台幣，有填實際扣款的照實際扣款算。</p>
         </section>
       </div>
+
+      <section v-if="store.proxyDebts.length" class="mt-8">
+        <h2 class="section-title mb-3">代購待收</h2>
+        <div class="card divide-y divide-ink-100 overflow-hidden dark:divide-ink-800">
+          <div v-for="d in store.proxyDebts" :key="`${d.payer_id}-${d.name}`" class="flex items-center gap-3 px-4 py-2.5">
+            <ShoppingBag class="size-4 shrink-0 text-ink-400" />
+            <p class="min-w-0 flex-1 truncate text-sm font-semibold">
+              {{ store.participantName(d.payer_id) }} 跟 {{ d.name }} 收<span class="ml-1 text-xs font-normal text-ink-400">{{ d.count }} 筆</span>
+            </p>
+            <span class="num shrink-0 font-bold">{{ formatMoney(d.amount) }}</span>
+          </div>
+        </div>
+        <p class="mt-2 px-1 text-xs leading-relaxed text-ink-400">幫不是旅伴的人買的，由付錢的人自己收，不算進總花費、轉帳建議與每個人的帳。</p>
+      </section>
 
       <section class="mt-8">
         <h2 class="section-title mb-3">旅費紀錄</h2>

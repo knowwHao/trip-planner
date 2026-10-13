@@ -1,4 +1,4 @@
-import type { AccountInfo, Expense, ExpenseShare, Participant, Spot, SpotItem, Transfer, Trip } from '@/types'
+import type { AccountInfo, Expense, ExpenseProxy, ExpenseShare, Participant, Spot, SpotItem, Transfer, Trip } from '@/types'
 import { addDays, todayYmd } from '@/lib/format'
 import { SORT_STEP } from '@/lib/order'
 
@@ -12,9 +12,10 @@ export function randomKey(): string {
 }
 
 type SeedShare = ExpenseShare & { trip_id: string }
+type SeedProxy = ExpenseProxy & { trip_id: string; sort_order: number }
 
-/** 示範旅程：一個月後出發的東京五天四夜；me 是成員，其他三位是只有名字的旅伴 */
-export function seedDemoTrip(me: AccountInfo) {
+/** 示範旅程：一個月後出發的東京五天四夜；me 與 others 都是成員 */
+export function seedDemoTrip(me: AccountInfo, others: AccountInfo[]) {
   const t = new Date().toISOString()
   const start = addDays(todayYmd(), 30)
   const trip: Trip = {
@@ -29,12 +30,11 @@ export function seedDemoTrip(me: AccountInfo) {
     updated_at: t,
   }
   const trip_id = trip.id
-  const names = [me.name, ...['小華', '阿傑', '小美', '小明'].filter((n) => n !== me.name).slice(0, 3)]
-  const participants: Participant[] = names.map((name, i) => ({
+  const participants: Participant[] = [me, ...others].map((a, i) => ({
     id: randomId(),
     trip_id,
-    account_id: i === 0 ? me.id : null,
-    name,
+    account_id: a.id,
+    name: a.name,
     sort_order: i,
     version: 1,
     created_at: t,
@@ -80,11 +80,11 @@ export function seedDemoTrip(me: AccountInfo) {
     spot(1, 2, '上野阿美橫丁', { category: 'shop', start_time: '16:00', address: '東京都台東区上野4丁目' }),
     spot(1, 3, '一蘭拉麵 上野店', { category: 'food', booking: 'none', start_time: '19:00', note: '不能訂位，可能要排隊' }),
     spot(1, 4, '上野站前飯店', { category: 'stay', booking: 'done', start_time: '21:00', note: '訂位代號 AB1234' }),
-    spot(2, 0, '淺草寺', { booking: 'none', start_time: '09:00', address: '東京都台東区浅草2-3-1', note: '雷門拍照、仲見世通吃點心' }),
+    spot(2, 0, '淺草寺', { start_time: '09:00', address: '東京都台東区浅草2-3-1', note: '雷門拍照、仲見世通吃點心' }),
     spot(2, 1, '東京晴空塔', { booking: 'done', start_time: '13:00', address: '東京都墨田区押上1-1-2' }),
     spot(2, 2, '敘敘苑 晴空塔店', { category: 'food', booking: 'todo', start_time: '18:00', note: '要先在官網訂位' }),
     spot(3, 0, '東京迪士尼海洋', { booking: 'todo', start_time: '08:00', note: '門票先在官網買好' }),
-    spot(4, 0, '築地場外市場', { category: 'food', booking: 'none', start_time: '08:30' }),
+    spot(4, 0, '築地場外市場', { category: 'food', start_time: '08:30' }),
     spot(4, 1, '銀座逛街', { category: 'shop', start_time: '11:00' }),
     spot(4, 2, '澀谷 SKY', { booking: 'todo', start_time: '17:30', note: '夕陽時段要提早訂' }),
     spot(5, 0, '回程班機', {
@@ -156,7 +156,7 @@ export function seedDemoTrip(me: AccountInfo) {
     spent_on: addDays(start, 3),
     spot_id: ginza.id,
     twd_amount: 2741,
-    note: '一次結帳，裡面有幫兩位旅伴代買的眼藥水和合利他命',
+    note: '一次結帳，裡面有幫兩位旅伴買的眼藥水和合利他命，還有幫媽媽代購的面膜',
   })
   const expenses = [flight, hotel, dinner, drugstore]
   const all = (e: Expense): SeedShare[] => participants.map((p) => ({ expense_id: e.id, trip_id, participant_id: p.id, amount: null }))
@@ -169,10 +169,12 @@ export function seedDemoTrip(me: AccountInfo) {
     { expense_id: dinner.id, trip_id, participant_id: mei, amount: 3000 },
     { expense_id: drugstore.id, trip_id, participant_id: self, amount: 1980 },
     { expense_id: drugstore.id, trip_id, participant_id: jie, amount: 3480 },
-    { expense_id: drugstore.id, trip_id, participant_id: mei, amount: 7340 },
+    { expense_id: drugstore.id, trip_id, participant_id: mei, amount: 4340 },
   ]
   const transfers: Transfer[] = [
     { id: randomId(), trip_id, from_id: mei, to_id: hua, amount: 9800, paid_on: todayYmd(), note: '機票錢', created_at: t },
   ]
-  return { trip, data: { participants, spots, items, expenses, shares, transfers } }
+  // 幫不是旅伴的人代購，不進旅伴之間的結算
+  const proxies: SeedProxy[] = [{ id: randomId(), expense_id: drugstore.id, trip_id, name: '媽媽', amount: 3000, sort_order: 0 }]
+  return { trip, data: { participants, spots, items, expenses, shares, proxies, transfers } }
 }

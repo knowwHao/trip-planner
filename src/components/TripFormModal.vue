@@ -18,7 +18,7 @@ const props = defineProps<{
 }>()
 const emit = defineEmits<{
   close: []
-  submit: [input: TripInput, members: Id[], names: string[]]
+  submit: [input: TripInput, members: Id[]]
 }>()
 
 const account = useAccountStore()
@@ -39,7 +39,7 @@ function toggle(id: Id) {
   picked.value = next
 }
 
-const form = reactive({ name: '', start: '', end: '', currency: 'TWD', rate: '1', people: '' })
+const form = reactive({ name: '', start: '', end: '', currency: 'TWD', rate: '1' })
 const touched = ref(false)
 let prevStart = ''
 
@@ -51,7 +51,6 @@ function fill(t: Trip | null | undefined) {
     end: t?.end_date ?? addDays(start, 2),
     currency: t?.currency ?? 'TWD',
     rate: String(t?.fx_rate ?? 1),
-    people: '',
   })
   prevStart = form.start
   picked.value = new Set()
@@ -73,7 +72,6 @@ watch(
 const stale = computed(() => !!props.trip && !!props.latest && props.latest.version !== props.trip.version)
 const rate = computed(() => (form.currency === 'TWD' ? 1 : Number(form.rate)))
 const days = computed(() => (form.start && form.end ? diffDays(form.start, form.end) + 1 : 0))
-const people = computed(() => [...new Set(form.people.split(/[\s,，、]+/).map((s) => s.trim()).filter(Boolean))])
 
 const errors = computed(() => {
   const e: Record<string, string> = {}
@@ -84,12 +82,7 @@ const errors = computed(() => {
   else if (days.value < 1) e.dates = '回程日不能早於出發日'
   else if (days.value > MAX_TRIP_DAYS) e.dates = `最多 ${MAX_TRIP_DAYS} 天`
   if (!(rate.value > 0 && rate.value < 100000)) e.rate = '請輸入大於 0 的匯率'
-  if (people.value.some((p) => [...p].length > 20)) e.people = '每個名字最多 20 個字'
-  if (people.value.length + picked.value.size > 50) e.people = '最多 50 位'
-  const memberNames = new Set(others.value.filter((a) => picked.value.has(a.id)).map((a) => a.name))
-  if (account.session) memberNames.add(account.session.name)
-  const dup = people.value.filter((p) => memberNames.has(p))
-  if (dup.length) e.people = `${dup.join('、')} 已經是成員，不用再寫一次`
+  if (picked.value.size > 50) e.people = '最多 50 位'
   return e
 })
 
@@ -100,7 +93,6 @@ function submit() {
     'submit',
     { name: form.name.trim(), start_date: form.start, end_date: form.end, currency: form.currency, fx_rate: rate.value },
     [...picked.value],
-    people.value,
   )
 }
 
@@ -184,12 +176,8 @@ function onStartChange() {
             <span class="truncate">{{ a.name }}</span>
           </button>
         </div>
-        <p v-else class="text-xs text-ink-400">{{ others.length ? '找不到這個名稱' : '還沒有其他人註冊，之後也能在設定加' }}</p>
-
-        <label class="label mt-4" for="trip-people">沒註冊的旅伴（選填）</label>
-        <textarea id="trip-people" v-model="form.people" class="input min-h-16" placeholder="阿姨 表哥" />
+        <p v-else class="text-xs text-ink-400">{{ others.length ? '找不到這個名稱' : '還沒有其他人註冊，請旅伴先註冊，之後在設定加' }}</p>
         <p v-if="touched && errors.people" class="mt-1 text-xs text-rose-500">{{ errors.people }}</p>
-        <p v-else class="mt-1 text-xs text-ink-400">只用來分旅費、看不到旅程；用空白或逗號分開，之後註冊了可以在設定換成帳號</p>
       </fieldset>
     </form>
     <template #footer>

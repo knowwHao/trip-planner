@@ -5,6 +5,7 @@ import type {
   Id,
   ShareInput,
   PinResult,
+  ProxyInput,
   Spot,
   SpotInput,
   SpotItem,
@@ -97,8 +98,8 @@ export interface TripRepository {
   listAccounts(): Promise<AccountInfo[]>
   /** 自己是成員的旅程 */
   listTrips(): Promise<TripSummary[]>
-  /** 建立者自動成為成員；members 是一起加入的帳號，names 是只有名字的旅伴；回傳旅程 id */
-  createTrip(input: TripInput, members: Id[], names: string[]): Promise<Id>
+  /** 建立者自動成為成員；members 是一起加入的帳號；回傳旅程 id */
+  createTrip(input: TripInput, members: Id[]): Promise<Id>
 
   /** 之後的旅程操作都針對這趟；null 表示沒有開啟旅程 */
   setTrip(tripId: Id | null): void
@@ -109,14 +110,11 @@ export interface TripRepository {
   updateTrip(version: number, patch: TripPatch): Promise<void>
   deleteTrip(): Promise<void>
 
-  /** 把註冊使用者加成成員；participantId 是要換成這個帳號的旅伴（接手他的旅費紀錄） */
+  /** 把註冊使用者加成成員；participantId 是要換成這個帳號、已移出的旅伴（接手他的旅費紀錄） */
   addMember(accountId: Id, participantId?: Id): Promise<void>
-  /** 移出成員：留下名字變成只有名字的旅伴；最後一位成員丟 LastMemberError */
+  /** 移出成員：留下名字讓旅費紀錄照常結算；最後一位成員丟 LastMemberError */
   removeMember(participantId: Id): Promise<void>
-  /** 只有名字的旅伴 */
-  addParticipants(rows: { name: string; sort_order: number }[]): Promise<void>
-  renameParticipant(id: Id, version: number, name: string): Promise<void>
-  /** 有旅費或轉帳紀錄時丟 InUseError */
+  /** 刪掉已移出的人；有旅費或轉帳紀錄時丟 InUseError */
   deleteParticipant(id: Id): Promise<void>
 
   createSpot(input: SpotInput): Promise<Spot>
@@ -134,8 +132,8 @@ export interface TripRepository {
   moveItems(moves: ItemMove[]): Promise<void>
   deleteItem(id: Id): Promise<void>
 
-  /** 寫入費用並以 shares 完整取代分攤；修改時版本不符丟 ConflictError */
-  saveExpense(input: ExpenseInput, shares: ShareInput[]): Promise<Id>
+  /** 寫入費用並以 shares、proxies 完整取代分攤與代購；修改時版本不符丟 ConflictError */
+  saveExpense(input: ExpenseInput, shares: ShareInput[], proxies: ProxyInput[]): Promise<Id>
   deleteExpense(id: Id): Promise<void>
 
   createTransfer(input: TransferInput): Promise<void>

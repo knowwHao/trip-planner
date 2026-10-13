@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest'
-import { customRemaining, expenseDues, netBalances, simplifyDebts, summaries, type SplitData } from './split'
-import type { Expense, ExpenseShare, Transfer } from '@/types'
+import { customRemaining, expenseDues, netBalances, proxyCollections, simplifyDebts, summaries, type SplitData } from './split'
+import type { Expense, ExpenseProxy, ExpenseShare, Transfer } from '@/types'
 
 const trip = { currency: 'JPY', fx_rate: 0.21 }
 
@@ -203,5 +203,102 @@ describe('customRemaining', () => {
     expect(customRemaining(0.3, [0.1, 0.2], 'USD')).toBe(0)
     expect(customRemaining(100, [30, null, 20], 'TWD')).toBe(50)
     expect(customRemaining(10.5, [11], 'USD')).toBe(-0.5)
+  })
+})
+
+const proxy = (expense_id: string, name: string, amount: number): ExpenseProxy => ({ id: `${expense_id}-${name}`, expense_id, name, amount })
+
+describe('代購', () => {
+  it('平分時先扣掉代購，剩下的旅伴平分', () => {
+    const r = expenseDues(expense({ id: 'e', amount: 1000, payer_id: 'a' }), even('e', 'a', 'b', 'c'), trip, [proxy('e', '媽媽', 400)])
+    expect(r.dues.map((d) => d.due)).toEqual([200, 200, 200])
+    expect(r.proxyDues).toEqual([{ name: '媽媽', due: 400 }])
+    expect(r.surplus).toBe(0)
+  })
+
+  it('平分除不盡時零頭只算在旅伴的部分', () => {
+    const r = expenseDues(expense({ id: 'e', amount: 1000, payer_id: 'a' }), even('e', 'a', 'b', 'c'), trip, [proxy('e', '媽媽', 300)])
+    // 700 ÷ 3 進位成 234
+    expect(r.dues.map((d) => d.due)).toEqual([234, 234, 234])
+    expect(r.surplus).toBe(2)
+  })
+
+  it('全部都是代購時旅伴不分攤', () => {
+    const r = expenseDues(expense({ id: 'e', amount: 500, payer_id: 'a' }), [], trip, [proxy('e', '媽媽', 200), proxy('e', '阿姨', 300)])
+    expect(r.dues).toEqual([])
+    expect(r.proxyDues.map((d) => d.due)).toEqual([200, 300])
+    expect(r.surplus).toBe(0)
+  })
+
+  it('各付各的金額：代購與旅伴各自用旅程匯率換算', () => {
+    const shares: ExpenseShare[] = [
+      { expense_id: 'e', participant_id: 'a', amount: 3000 },
+      { expense_id: 'e', participant_id: 'b', amount: 2000 },
+    ]
+    const r = expenseDues(expense({ id: 'e', amount: 10000, currency: 'JPY', payer_id: 'a', split_mode: 'custom' }), shares, trip, [
+      proxy('e', '媽媽', 5000),
+    ])
+    expect(r.dues.map((d) => d.due)).toEqual([630, 420])
+    expect(r.proxyDues).toEqual([{ name: '媽媽', due: 1050 }])
+    expect(r.twdTotal).toBe(2100)
+  })
+
+  it('有實際扣款時代購也照比例分配，加總恰好等於扣款', () => {
+    const shares: ExpenseShare[] = [
+      { expense_id: 'e', participant_id: 'a', amount: 3000 },
+      { expense_id: 'e', participant_id: 'b', amount: 2000 },
+    ]
+    const e = expense({ id: 'e', amount: 10000, currency: 'JPY', payer_id: 'a', split_mode: 'custom', twd_amount: 2151 })
+    const r = expenseDues(e, shares, trip, [proxy('e', '媽媽', 5000)])
+    const sum = r.dues.reduce((s, d) => s + d.due, 0) + r.proxyDues.reduce((s, d) => s + d.due, 0)
+    expect(sum).toBe(2151)
+    // 2151 依 3000：2000：5000 分成 645.3、430.2、1075.5，餘數給小數最大的代購
+    expect(r.proxyDues[0].due).toBe(1076)
+    expect(r.surplus).toBe(0)
+  })
+
+  it('平分加實際扣款：旅伴的部分依比例算出來再平分', () => {
+    const e = expense({ id: 'e', amount: 10000, currency: 'JPY', payer_id: 'a', twd_amount: 2150 })
+    const r = expenseDues(e, even('e', 'a', 'b'), trip, [proxy('e', '媽媽', 4000)])
+    // 2150 依 6000：4000 分成 1290、860
+    expect(r.proxyDues[0].due).toBe(860)
+    expect(r.dues.map((d) => d.due)).toEqual([645, 645])
+  })
+
+  it('代購不進結算：付錢的人只向旅伴收，全體加總仍為 0', () => {
+    const data: SplitData = {
+      trip,
+      participants: [{ id: 'a' }, { id: 'b' }],
+      expenses: [expense({ id: 'e', amount: 1000, payer_id: 'a' })],
+      shares: even('e', 'a', 'b'),
+      proxies: [proxy('e', '媽媽', 400)],
+      transfers: [],
+    }
+    expect(Object.fromEntries(netBalances(data))).toEqual({ a: 300, b: -300 })
+    // 代墊只算旅伴的部分，代購另外列在代購待收
+    expect(summaries(data)).toEqual([
+      { participant_id: 'a', paid: 600, share: 300, net: 300 },
+      { participant_id: 'b', paid: 0, share: 300, net: -300 },
+    ])
+  })
+
+  it('代購待收依付錢的人與名字加總', () => {
+    const data: SplitData = {
+      trip,
+      participants: [{ id: 'a' }, { id: 'b' }],
+      expenses: [
+        expense({ id: 'e1', amount: 1000, payer_id: 'a' }),
+        expense({ id: 'e2', amount: 500, payer_id: 'a' }),
+        expense({ id: 'e3', amount: 800, payer_id: 'b' }),
+      ],
+      shares: [...even('e1', 'a', 'b'), ...even('e2', 'a'), ...even('e3', 'b')],
+      proxies: [proxy('e1', '媽媽', 400), proxy('e2', ' 媽媽', 100), proxy('e3', '媽媽', 300), proxy('e3', '阿姨', 200)],
+      transfers: [],
+    }
+    expect(proxyCollections(data)).toEqual([
+      { payer_id: 'a', name: '媽媽', amount: 500, count: 2 },
+      { payer_id: 'b', name: '媽媽', amount: 300, count: 1 },
+      { payer_id: 'b', name: '阿姨', amount: 200, count: 1 },
+    ])
   })
 })
