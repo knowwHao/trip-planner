@@ -1,19 +1,26 @@
 <script setup lang="ts">
 import { computed, onBeforeUnmount, onMounted, ref } from 'vue'
 import Sortable from 'sortablejs'
-import { Check, GripVertical, Navigation, Plus } from 'lucide-vue-next'
+import { Check, GripVertical, Navigation, Plus, ReceiptText } from 'lucide-vue-next'
 import type { Spot, SpotItem } from '@/types'
 import { useTripStore } from '@/stores/trip'
 import { googleMapsUrl } from '@/lib/maps'
 import { itemWords } from '@/lib/category'
+import { formatMoney } from '@/lib/money'
+import { expenseTwd } from '@/lib/split'
 import { evenKeys, keyBetween } from '@/lib/order'
 import { errorMessage, toast } from '@/composables/useToast'
 
 const props = defineProps<{ spot: Spot; items: SpotItem[] }>()
-const emit = defineEmits<{ edit: [item: SpotItem | null] }>()
+const emit = defineEmits<{ edit: [item: SpotItem | null]; expenses: [item: SpotItem] }>()
 
 const store = useTripStore()
 const words = computed(() => itemWords(props.spot.category))
+
+function spentOn(item: SpotItem) {
+  const list = store.expensesByItem.get(item.id) ?? []
+  return { count: list.length, twd: store.trip ? list.reduce((s, e) => s + expenseTwd(e, store.trip!), 0) : 0 }
+}
 
 async function toggleDone(item: SpotItem) {
   try {
@@ -94,6 +101,15 @@ async function move(id: string, index: number) {
         <button type="button" class="min-w-0 flex-1 rounded-lg px-1.5 py-1.5 text-left" @click="emit('edit', item)">
           <span class="block text-sm font-semibold break-words" :class="item.done && 'text-ink-400 line-through decoration-ink-300'">{{ item.title }}</span>
           <span v-if="item.note" class="block text-xs whitespace-pre-line text-ink-500 dark:text-ink-300">{{ item.note }}</span>
+        </button>
+        <button
+          v-if="spentOn(item).count"
+          type="button"
+          class="num flex shrink-0 items-center gap-1 rounded-lg px-1.5 py-1 text-xs font-semibold text-ink-500 hover:bg-ink-50 dark:text-ink-300 dark:hover:bg-ink-800"
+          :aria-label="`${item.title} 的旅費：${spentOn(item).count} 筆，共 ${formatMoney(spentOn(item).twd)}`"
+          @click="emit('expenses', item)"
+        >
+          <ReceiptText class="size-3.5" />{{ formatMoney(spentOn(item).twd) }}
         </button>
         <a
           v-if="googleMapsUrl(item)"

@@ -93,7 +93,7 @@ describe('DemoRepo', () => {
   it('代購：存進去、修改時整批取代、刪旅費連帶刪除', async () => {
     const { repo } = await setup()
     const [a, b] = (await repo.loadTrip()).participants.map((p) => p.id)
-    const base = { title: '藥妝', amount: 10000, currency: 'JPY', payer_id: a, spent_on: null, spot_id: null, note: '', twd_amount: null }
+    const base = { title: '藥妝', amount: 10000, currency: 'JPY', payer_id: a, spent_on: null, spot_id: null, item_id: null, note: '', twd_amount: null }
     const id = await repo.saveExpense({ ...base, split_mode: 'custom' }, [{ participant_id: b, amount: 6000 }], [{ name: ' 媽媽 ', amount: 4000 }])
     expect((await repo.loadTrip()).proxies.map((x) => [x.name, x.amount])).toEqual([['媽媽', 4000]])
     // 指定金額加代購要等於總額；平分時代購要小於總額，沒勾人時要等於總額
@@ -125,7 +125,7 @@ describe('DemoRepo', () => {
     await repo.setWishSpot([w.id], null)
     await repo.updateWishItem(w.id, 1, { note: '藍色' })
     await expect(repo.updateWishItem(w.id, 1, { note: '舊的' })).rejects.toBeInstanceOf(ConflictError)
-    const base = { title: '藥妝', amount: 1000, currency: 'JPY', payer_id: pa, spent_on: null, spot_id: null, note: '', twd_amount: null }
+    const base = { title: '藥妝', amount: 1000, currency: 'JPY', payer_id: pa, spent_on: null, spot_id: null, item_id: null, note: '', twd_amount: null }
     const eid = await repo.saveExpense({ ...base, split_mode: 'custom' }, [{ participant_id: pa, amount: 600 }], [{ name: '媽媽', amount: 400, wish_item_id: w.id }])
     let data = await repo.loadTrip()
     expect(data.wishItems[0].status).toBe('bought')
@@ -140,6 +140,24 @@ describe('DemoRepo', () => {
     expect(data.wishItems).toEqual([])
     expect(data.wishPhotos).toEqual([])
     expect(data.proxies[0].wish_item_id).toBeNull()
+  })
+
+  it('子項目的旅費：子項目要屬於這筆的行程，刪掉子項目只清連結、刪行程一起清', async () => {
+    const { repo } = await setup()
+    const [pa] = (await repo.loadTrip()).participants.map((p) => p.id)
+    const ginza = await repo.createSpot({ ...spotBase, category: 'shop', title: '銀座', sort_key: 1 })
+    const shibuya = await repo.createSpot({ ...spotBase, category: 'shop', title: '澀谷', sort_key: 2 })
+    const uniqlo = await repo.createItem({ spot_id: ginza.id, title: 'UNIQLO', address: '', map_url: '', note: '', sort_key: 1 })
+    const parco = await repo.createItem({ spot_id: shibuya.id, title: 'PARCO', address: '', map_url: '', note: '', sort_key: 1 })
+    const base = { title: '襪子', amount: 1000, currency: 'JPY', payer_id: pa, split_mode: 'even' as const, spent_on: null, note: '', twd_amount: null }
+    await expect(repo.saveExpense({ ...base, spot_id: ginza.id, item_id: parco.id }, [{ participant_id: pa, amount: null }], [])).rejects.toThrow()
+    const e1 = await repo.saveExpense({ ...base, spot_id: ginza.id, item_id: uniqlo.id }, [{ participant_id: pa, amount: null }], [])
+    const e2 = await repo.saveExpense({ ...base, spot_id: shibuya.id, item_id: parco.id }, [{ participant_id: pa, amount: null }], [])
+    await repo.deleteItem(uniqlo.id)
+    await repo.deleteSpot(shibuya.id)
+    const byId = new Map((await repo.loadTrip()).expenses.map((e) => [e.id, e]))
+    expect(byId.get(e1)).toMatchObject({ spot_id: ginza.id, item_id: null })
+    expect(byId.get(e2)).toMatchObject({ spot_id: null, item_id: null })
   })
 
   it('景點改內容加版本、搬動不加，舊版本更新是衝突', async () => {
@@ -170,7 +188,7 @@ describe('DemoRepo', () => {
   it('費用：指定金額要加總等於總額、有紀錄的旅伴不能刪、有外幣費用不能換幣別', async () => {
     const { repo } = await setup()
     const [a, c] = (await repo.loadTrip()).participants.map((p) => p.id)
-    const base = { title: '晚餐', amount: 3000, currency: 'JPY', payer_id: a, spent_on: null, spot_id: null, note: '', twd_amount: null }
+    const base = { title: '晚餐', amount: 3000, currency: 'JPY', payer_id: a, spent_on: null, spot_id: null, item_id: null, note: '', twd_amount: null }
     await expect(repo.saveExpense({ ...base, split_mode: 'custom' }, [{ participant_id: a, amount: 1000 }], [])).rejects.toThrow()
     const id = await repo.saveExpense(
       { ...base, split_mode: 'custom' },

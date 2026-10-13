@@ -104,7 +104,10 @@ function readStorage(): DemoDb | null {
       Reflect.deleteProperty(s, 'est_cost')
       for (const [k, v] of Object.entries(NO_FLIGHT)) (s as unknown as Record<string, unknown>)[k] ??= v
     }
-    for (const e of db.expenses) e.twd_amount ??= null
+    for (const e of db.expenses) {
+      e.twd_amount ??= null
+      e.item_id ??= null
+    }
     // 加入子項目與帳號前存下的示範資料
     db.items ??= []
     db.accounts ??= []
@@ -382,7 +385,8 @@ export class DemoRepo implements TripRepository {
     const trip = this.guard()
     this.db.spots = this.db.spots.filter((s) => !(s.id === id && s.trip_id === trip.id))
     this.db.items = this.db.items.filter((i) => i.spot_id !== id)
-    for (const e of this.db.expenses) if (e.spot_id === id) e.spot_id = null
+    // 與 schema.sql 相同：行程刪掉時旅費的行程與子項目一起清掉
+    for (const e of this.db.expenses) if (e.spot_id === id) Object.assign(e, { spot_id: null, item_id: null })
     for (const w of this.db.wishItems) if (w.spot_id === id) w.spot_id = null
     this.commit()
   }
@@ -432,6 +436,7 @@ export class DemoRepo implements TripRepository {
   async deleteItem(id: Id) {
     const trip = this.guard()
     this.db.items = this.db.items.filter((i) => !(i.id === id && i.trip_id === trip.id))
+    for (const e of this.db.expenses) if (e.item_id === id) e.item_id = null
     this.commit()
   }
 
@@ -442,6 +447,10 @@ export class DemoRepo implements TripRepository {
     if (code !== 'TWD' && code !== trip.currency) throw bad()
     if (!shares.length && !proxies.length) throw bad()
     if (proxies.some((p) => !p.name.trim() || [...p.name.trim()].length > 20 || !(p.amount > 0))) throw bad()
+    // 與 expenses_item_fkey 相同：子項目要屬於這筆旅費的行程
+    if (input.item_id && !this.db.items.some((i) => i.id === input.item_id && i.spot_id === input.spot_id && i.trip_id === trip.id)) {
+      throw new Error('有旅伴或景點剛被別人刪除，請重新整理後再試')
+    }
     // 與 save_expense() 相同：指定金額時旅伴加代購要等於總額；平分時代購要留一些給旅伴分，沒有旅伴時要等於總額
     const total = toMinor(input.amount, code)
     const proxySum = proxies.reduce((s, p) => s + toMinor(p.amount, code), 0)

@@ -95,6 +95,8 @@ export interface Expense {
   split_mode: SplitMode
   spent_on: string | null
   spot_id: Id | null
+  /** 記在 spot_id 那個行程底下的哪個子項目（地點、店家）；有值時 spot_id 一定有值 */
+  item_id: Id | null
   note: string
   /** 外幣旅費的實際扣款（新台幣），有填時這筆用它換算而不用旅程匯率 */
   twd_amount: number | null
@@ -222,6 +224,7 @@ export interface ExpenseInput {
   split_mode: SplitMode
   spent_on: string | null
   spot_id: Id | null
+  item_id: Id | null
   note: string
   twd_amount: number | null
 }

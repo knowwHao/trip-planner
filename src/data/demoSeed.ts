@@ -136,6 +136,7 @@ export function seedDemoTrip(me: AccountInfo, others: AccountInfo[]) {
     split_mode: 'even',
     spent_on: null,
     spot_id: null,
+    item_id: null,
     note: '',
     twd_amount: null,
     version: 1,
@@ -155,6 +156,8 @@ export function seedDemoTrip(me: AccountInfo, others: AccountInfo[]) {
     split_mode: 'custom',
     spent_on: addDays(start, 3),
     spot_id: ginza.id,
+    // 記在銀座逛街底下的松本清
+    item_id: items.find((x) => x.title === '松本清 銀座店')!.id,
     twd_amount: 2741,
     note: '一次結帳，裡面有幫兩位旅伴買的眼藥水和合利他命，還有幫媽媽代購的面膜',
   })

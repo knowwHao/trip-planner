@@ -109,8 +109,10 @@ function editItem(s: Spot, item: SpotItem | null) {
   itemOpen.value = true
 }
 
-// 行程的旅費：卡片上的金額打開清單，清單或編輯框都能記一筆（帶入這個行程與那天的日期）
+// 行程的旅費：卡片上的金額打開清單，清單或編輯框都能記一筆（帶入這個行程與那天的日期）；
+// 子項目的旅費一樣，另外帶入是哪個地點或店家
 const expenseSpot = ref<Spot | null>(null)
+const expenseItem = ref<SpotItem | null>(null)
 const expensesOpen = ref(false)
 const editingExpense = ref<Expense | null>(null)
 const expenseOpen = ref(false)
@@ -118,31 +120,40 @@ const expensePreset = computed(() =>
   expenseSpot.value
     ? {
         spot_id: expenseSpot.value.id,
+        item_id: expenseItem.value?.id ?? null,
         spent_on: expenseSpot.value.day && expenseSpot.value.day <= store.dayCount ? dayDate(trip.value, expenseSpot.value.day) : null,
-        title: expenseSpot.value.title,
+        title: expenseItem.value?.title ?? expenseSpot.value.title,
       }
     : null,
 )
 
-function showExpenses(s: Spot) {
+function showExpenses(s: Spot, item: SpotItem | null = null) {
   expenseSpot.value = s
+  expenseItem.value = item
   expensesOpen.value = true
 }
 
 function editExpense(e: Expense | null) {
   expensesOpen.value = false
   modalOpen.value = false
+  itemOpen.value = false
   editingExpense.value = e
   expenseOpen.value = true
 }
 
-function addExpenseFromForm(s: Spot) {
+function addExpenseFromForm(s: Spot, item: SpotItem | null = null) {
   if (!store.participants.length) {
     toast.info('記旅費前要先到「設定」新增旅伴')
     return
   }
   expenseSpot.value = s
+  expenseItem.value = item
   editExpense(null)
+}
+
+/** 子項目的編輯框按「記一筆旅費」 */
+function addItemExpense(item: SpotItem) {
+  if (itemSpot.value) addExpenseFromForm(itemSpot.value, item)
 }
 
 // 自己排在行程裡的代購：卡片上的「代購」打開清單，清單可以直接記一筆旅費（會列出這些代購讓你勾）
@@ -342,13 +353,14 @@ function jump(day: number | null) {
         @booking="toggleBooking"
         @item-edit="editItem"
         @expenses="showExpenses"
+        @item-expenses="showExpenses"
         @wishes="showWishes"
       />
     </section>
 
     <SpotFormModal :open="modalOpen" :spot="editing" :day="addingDay" @close="modalOpen = false" @add-item="addItemFromForm" @add-expense="addExpenseFromForm" />
-    <ItemFormModal :open="itemOpen" :spot="itemSpot" :item="editingItem" @close="itemOpen = false" />
-    <SpotExpensesModal :open="expensesOpen" :spot="expenseSpot" @close="expensesOpen = false" @edit="editExpense" />
+    <ItemFormModal :open="itemOpen" :spot="itemSpot" :item="editingItem" @close="itemOpen = false" @add-expense="addItemExpense" />
+    <SpotExpensesModal :open="expensesOpen" :spot="expenseSpot" :item="expenseItem" @close="expensesOpen = false" @edit="editExpense" />
     <SpotWishModal :open="wishesOpen" :spot="wishSpot" @close="wishesOpen = false" @edit="editWish" @record="recordWishes" />
     <WishItemModal :open="wishOpen" :item="editingWish" @close="wishOpen = false" />
     <ExpenseFormModal :open="expenseOpen" :expense="editingExpense" :preset="expensePreset" @close="expenseOpen = false" />

@@ -263,6 +263,17 @@ export const useTripStore = defineStore('trip', () => {
     return map
   })
 
+  const expensesByItem = computed(() => {
+    const map = new Map<Id, Expense[]>()
+    for (const e of data.value?.expenses ?? []) {
+      if (!e.item_id) continue
+      const list = map.get(e.item_id)
+      if (list) list.push(e)
+      else map.set(e.item_id, [e])
+    }
+    return map
+  })
+
   const splitData = computed(() =>
     data.value
       ? {
@@ -299,6 +310,7 @@ export const useTripStore = defineStore('trip', () => {
     spotsByDay,
     itemsBySpot,
     expensesBySpot,
+    expensesByItem,
     balances,
     settlements,
     memberSummaries,
