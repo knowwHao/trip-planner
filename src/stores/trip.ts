@@ -1,12 +1,12 @@
 import { defineStore } from 'pinia'
 import { computed, ref, shallowRef } from 'vue'
-import type { Expense, Id, Participant, Spot, SpotItem, TripData } from '@/types'
+import type { Expense, ExpenseProxy, Id, Participant, Spot, SpotItem, TripData, WishItem, WishPhoto, WishStatus } from '@/types'
 import { repo } from '@/data'
 import { AccountSessionError, ConflictError, NoAccessError, type ItemMove, type SpotMove } from '@/data/repository'
 import { RowMissingError } from '@/data/writeCheck'
 import { errorMessage } from '@/composables/useToast'
 import { tripDayCount } from '@/lib/format'
-import { netBalances, proxyCollections, simplifyDebts, summaries } from '@/lib/split'
+import { netBalances, proxyCollections, proxyTwdById, simplifyDebts, summaries } from '@/lib/split'
 import { useAccountStore } from './account'
 
 /** checking：讀取中；noaccess：不是成員或旅程已刪除；error：連線失敗 */
@@ -163,6 +163,19 @@ export const useTripStore = defineStore('trip', () => {
     }
   }
 
+  /** 代購項目打勾：先改畫面再寫入，失敗時以伺服器資料為準 */
+  async function setWishStatus(id: Id, status: WishStatus) {
+    const d = data.value
+    if (!d) return
+    data.value = { ...d, wishItems: d.wishItems.map((w) => (w.id === id ? { ...w, status } : w)) }
+    try {
+      await mutate(() => repo.setWishStatus(id, status))
+    } catch (e) {
+      await load()
+      throw e
+    }
+  }
+
   // 從背景切回來、網路恢復時補抓；即時通知在手機休眠時會漏
   document.addEventListener('visibilitychange', () => {
     if (document.visibilityState === 'visible' && status.value === 'ok') void load()
@@ -215,6 +228,41 @@ export const useTripStore = defineStore('trip', () => {
     return map
   })
 
+  const wishItems = computed<WishItem[]>(() => data.value?.wishItems ?? [])
+  /** 自己排在各行程的代購項目 */
+  const wishBySpot = computed(() => {
+    const map = new Map<Id, WishItem[]>()
+    for (const w of wishItems.value) {
+      if (!w.spot_id) continue
+      const list = map.get(w.spot_id)
+      if (list) list.push(w)
+      else map.set(w.spot_id, [w])
+    }
+    return map
+  })
+  const wishPhotosByItem = computed(() => {
+    const map = new Map<Id, WishPhoto[]>()
+    for (const p of data.value?.wishPhotos ?? []) {
+      const list = map.get(p.item_id)
+      if (list) list.push(p)
+      else map.set(p.item_id, [p])
+    }
+    return map
+  })
+  /** 代購項目記過的帳：哪一筆旅費、外幣金額與換成的新台幣 */
+  const wishRecords = computed(() => {
+    const map = new Map<Id, { proxy: ExpenseProxy; expense: Expense; twd: number }>()
+    const d = data.value
+    if (!d) return map
+    const twd = splitData.value ? proxyTwdById(splitData.value) : new Map<Id, number>()
+    const byId = new Map(d.expenses.map((e) => [e.id, e]))
+    for (const p of d.proxies) {
+      const e = byId.get(p.expense_id)
+      if (p.wish_item_id && e) map.set(p.wish_item_id, { proxy: p, expense: e, twd: twd.get(p.id) ?? 0 })
+    }
+    return map
+  })
+
   const splitData = computed(() =>
     data.value
       ? {
@@ -255,6 +303,10 @@ export const useTripStore = defineStore('trip', () => {
     settlements,
     memberSummaries,
     proxyDebts,
+    wishItems,
+    wishBySpot,
+    wishPhotosByItem,
+    wishRecords,
     open,
     close,
     load,
@@ -262,6 +314,7 @@ export const useTripStore = defineStore('trip', () => {
     moveSpots,
     setItemDone,
     moveItems,
+    setWishStatus,
     participantName,
   }
 })

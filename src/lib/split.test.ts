@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { customRemaining, expenseDues, netBalances, proxyCollections, simplifyDebts, summaries, type SplitData } from './split'
+import { customRemaining, expenseDues, netBalances, proxyCollections, proxyTwdById, simplifyDebts, summaries, type SplitData } from './split'
 import type { Expense, ExpenseProxy, ExpenseShare, Transfer } from '@/types'
 
 const trip = { currency: 'JPY', fx_rate: 0.21 }
@@ -206,7 +206,7 @@ describe('customRemaining', () => {
   })
 })
 
-const proxy = (expense_id: string, name: string, amount: number): ExpenseProxy => ({ id: `${expense_id}-${name}`, expense_id, name, amount })
+const proxy = (expense_id: string, name: string, amount: number): ExpenseProxy => ({ id: `${expense_id}-${name}`, expense_id, name, amount, wish_item_id: null })
 
 describe('代購', () => {
   it('平分時先扣掉代購，剩下的旅伴平分', () => {
@@ -300,5 +300,23 @@ describe('代購', () => {
       { payer_id: 'b', name: '媽媽', amount: 300, count: 1 },
       { payer_id: 'b', name: '阿姨', amount: 200, count: 1 },
     ])
+  })
+})
+
+describe('proxyTwdById', () => {
+  it('每筆代購換成新台幣，有實際扣款時依比例分配', () => {
+    const data: SplitData = {
+      trip,
+      participants: [{ id: 'a' }],
+      expenses: [
+        expense({ id: 'e1', amount: 10000, currency: 'JPY', payer_id: 'a', split_mode: 'custom', twd_amount: 2150 }),
+        expense({ id: 'e2', amount: 1000, currency: 'JPY', payer_id: 'a' }),
+      ],
+      shares: [{ expense_id: 'e1', participant_id: 'a', amount: 7000 }, ...even('e2', 'a')],
+      proxies: [proxy('e1', '媽媽', 3000), proxy('e2', '阿姨', 400)],
+      transfers: [],
+    }
+    // 2150 依 7000：3000 分成 1505、645；400 日圓 × 0.21 = 84
+    expect(Object.fromEntries(proxyTwdById(data))).toEqual({ 'e1-媽媽': 645, 'e2-阿姨': 84 })
   })
 })

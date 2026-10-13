@@ -1,4 +1,4 @@
-import type { AccountInfo, Expense, ExpenseProxy, ExpenseShare, Participant, Spot, SpotItem, Transfer, Trip } from '@/types'
+import type { AccountInfo, Expense, ExpenseProxy, ExpenseShare, Participant, Spot, SpotItem, Transfer, Trip, WishItem } from '@/types'
 import { addDays, todayYmd } from '@/lib/format'
 import { SORT_STEP } from '@/lib/order'
 
@@ -175,6 +175,31 @@ export function seedDemoTrip(me: AccountInfo, others: AccountInfo[]) {
     { id: randomId(), trip_id, from_id: mei, to_id: hua, amount: 9800, paid_on: todayYmd(), note: '機票錢', created_at: t },
   ]
   // 幫不是旅伴的人代購，不進旅伴之間的結算
-  const proxies: SeedProxy[] = [{ id: randomId(), expense_id: drugstore.id, trip_id, name: '媽媽', amount: 3000, sort_order: 0 }]
-  return { trip, data: { participants, spots, items, expenses, shares, proxies, transfers } }
+  // 我的代購清單：面膜已在銀座買好並記成上面藥妝那筆的代購，另外兩項還沒買
+  const wish = (i: number, recipient: string, title: string, extra: Partial<WishItem> = {}): WishItem => ({
+    id: randomId(),
+    trip_id,
+    owner_id: me.id,
+    recipient,
+    title,
+    qty: 1,
+    note: '',
+    url: '',
+    spot_id: null,
+    status: 'todo',
+    sort_key: (i + 1) * SORT_STEP,
+    version: 1,
+    created_at: t,
+    updated_at: t,
+    ...extra,
+  })
+  const wishItems: WishItem[] = [
+    wish(0, '媽媽', '面膜', { qty: 2, spot_id: ginza.id, status: 'bought', note: '肌美精，藍色那款' }),
+    wish(1, '阿姨', '合利他命 EX', { spot_id: ginza.id, note: '270 錠' }),
+    wish(2, '同事小陳', '東京香蕉蛋糕', { qty: 3, note: '機場或東京車站買' }),
+  ]
+  const proxies: SeedProxy[] = [
+    { id: randomId(), expense_id: drugstore.id, trip_id, name: '媽媽', amount: 3000, sort_order: 0, wish_item_id: wishItems[0].id },
+  ]
+  return { trip, data: { participants, spots, items, expenses, shares, proxies, transfers, wishItems } }
 }

@@ -6,7 +6,9 @@ import SpotFormModal from '@/components/SpotFormModal.vue'
 import ItemFormModal from '@/components/ItemFormModal.vue'
 import ExpenseFormModal from '@/components/ExpenseFormModal.vue'
 import SpotExpensesModal from '@/components/SpotExpensesModal.vue'
-import type { Expense, Id, Spot, SpotCategory, SpotItem } from '@/types'
+import SpotWishModal from '@/components/SpotWishModal.vue'
+import WishItemModal from '@/components/WishItemModal.vue'
+import type { Expense, Id, Spot, SpotCategory, SpotItem, WishItem } from '@/types'
 import { repo } from '@/data'
 import { useTripStore } from '@/stores/trip'
 import { ConflictError, type SpotMove } from '@/data/repository'
@@ -141,6 +143,29 @@ function addExpenseFromForm(s: Spot) {
   }
   expenseSpot.value = s
   editExpense(null)
+}
+
+// 自己排在行程裡的代購：卡片上的「代購」打開清單，清單可以直接記一筆旅費（會列出這些代購讓你勾）
+const wishSpot = ref<Spot | null>(null)
+const wishesOpen = ref(false)
+const editingWish = ref<WishItem | null>(null)
+const wishOpen = ref(false)
+
+function showWishes(s: Spot) {
+  wishSpot.value = s
+  wishesOpen.value = true
+}
+
+function editWish(w: WishItem) {
+  wishesOpen.value = false
+  editingWish.value = w
+  wishOpen.value = true
+}
+
+function recordWishes() {
+  const s = wishSpot.value
+  wishesOpen.value = false
+  if (s) addExpenseFromForm(s)
 }
 
 /** 從行程的編輯框按「新增店家」：關掉編輯框、展開子清單、開新增框 */
@@ -317,12 +342,15 @@ function jump(day: number | null) {
         @booking="toggleBooking"
         @item-edit="editItem"
         @expenses="showExpenses"
+        @wishes="showWishes"
       />
     </section>
 
     <SpotFormModal :open="modalOpen" :spot="editing" :day="addingDay" @close="modalOpen = false" @add-item="addItemFromForm" @add-expense="addExpenseFromForm" />
     <ItemFormModal :open="itemOpen" :spot="itemSpot" :item="editingItem" @close="itemOpen = false" />
     <SpotExpensesModal :open="expensesOpen" :spot="expenseSpot" @close="expensesOpen = false" @edit="editExpense" />
+    <SpotWishModal :open="wishesOpen" :spot="wishSpot" @close="wishesOpen = false" @edit="editWish" @record="recordWishes" />
+    <WishItemModal :open="wishOpen" :item="editingWish" @close="wishOpen = false" />
     <ExpenseFormModal :open="expenseOpen" :expense="editingExpense" :preset="expensePreset" @close="expenseOpen = false" />
   </div>
 </template>

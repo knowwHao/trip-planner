@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import { computed } from 'vue'
-import { ChevronRight, GripVertical, MapPin, Navigation, Plus, ReceiptText } from 'lucide-vue-next'
+import { ChevronRight, GripVertical, MapPin, Navigation, Plus, ReceiptText, ShoppingBag } from 'lucide-vue-next'
 import SpotItems from './SpotItems.vue'
 import type { Spot, SpotItem } from '@/types'
 import { useTripStore } from '@/stores/trip'
@@ -13,7 +13,7 @@ import { expenseTwd } from '@/lib/split'
 import { flightSummary, hasFlight } from '@/lib/flight'
 
 const props = withDefaults(defineProps<{ spot: Spot; draggable?: boolean }>(), { draggable: true })
-const emit = defineEmits<{ edit: []; booking: []; 'item-edit': [item: SpotItem | null]; expenses: [] }>()
+const emit = defineEmits<{ edit: []; booking: []; 'item-edit': [item: SpotItem | null]; expenses: []; wishes: [] }>()
 
 const store = useTripStore()
 const expanded = useExpanded()
@@ -30,6 +30,9 @@ const flight = computed(() => {
   const line = flightSummary(props.spot)
   return props.spot.airline && props.spot.flight_no ? `${props.spot.airline} ${line}` : line
 })
+// 自己排在這裡的代購，別人看不到
+const wishes = computed(() => store.wishBySpot.get(props.spot.id) ?? [])
+const wishTodo = computed(() => wishes.value.filter((w) => w.status === 'todo').length)
 const spent = computed(() => (store.trip ? expenses.value.reduce((s, e) => s + expenseTwd(e, store.trip!), 0) : 0))
 
 function addFirst() {
@@ -88,7 +91,7 @@ const status = computed(() => {
         <Navigation class="size-5" />
       </a>
     </div>
-    <div v-if="status || showItems || expenses.length" class="flex flex-wrap items-center gap-x-1 gap-y-0.5 pb-0.5" :class="draggable ? 'ml-8' : 'ml-0.5'">
+    <div v-if="status || showItems || expenses.length || wishes.length" class="flex flex-wrap items-center gap-x-1 gap-y-0.5 pb-0.5" :class="draggable ? 'ml-8' : 'ml-0.5'">
       <button
         v-if="status?.next"
         type="button"
@@ -129,6 +132,15 @@ const status = computed(() => {
         @click="emit('expenses')"
       >
         <ReceiptText class="size-3.5" />{{ formatMoney(spent) }}・{{ expenses.length }} 筆
+      </button>
+      <button
+        v-if="wishes.length"
+        type="button"
+        class="flex items-center gap-1 rounded-lg px-1.5 py-1 text-xs font-semibold text-ink-500 hover:bg-ink-50 dark:text-ink-300 dark:hover:bg-ink-800"
+        :aria-label="`${spot.title} 的代購：${wishes.length} 項，待買 ${wishTodo} 項`"
+        @click="emit('wishes')"
+      >
+        <ShoppingBag class="size-3.5" />代購 {{ wishes.length }}<template v-if="wishTodo">・待買 {{ wishTodo }}</template>
       </button>
     </div>
     <SpotItems v-if="showItems && open && items.length" class="ml-1" :spot="spot" :items="items" @edit="emit('item-edit', $event)" />

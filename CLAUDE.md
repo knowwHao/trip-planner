@@ -7,6 +7,7 @@ Vue 3 + Vite + TypeScript + Tailwind CSS v4 + Pinia + Vue Router（hash 模式�
 登入憑證走 `x-account-id`／`x-account-key` header，RLS 只放行自己是成員（`participants.account_id`）的旅程；
 任何成員都能加人、移人（`add_trip_member()`／`remove_trip_member()`），旅程至少留一位成員；旅伴一律要有帳號，被移出的人 `account_id` 變 null、留著名字讓旅費照常結算。
 幫不是旅伴的人買的記成代購（`expense_proxies`），不進旅伴之間的結算，「旅費」頁另列代購待收。
+每個人有自己的代購清單（`wish_items`、`wish_photos`，只有自己看得到），能排進購物行程、記帳時帶成代購列（`expense_proxies.wish_item_id`）。
 沒有旅程連結（舊版的 `#/t/<token>` 與 `trips.token` 已拿掉）。
 架構與做法沿用姊妹專案 `knowwHao/sports-ledger`（球友記帳）。人看的完整說明在 `README.md`。
 
@@ -26,9 +27,10 @@ npm run build        # vue-tsc 型別檢查 + vite build 到 dist/
 - **金鑰**：Supabase anon key 只能透過 env 注入，不得寫死；任何地方都不得使用 `service_role` key
 - **localStorage 鍵名**：與 sports-ledger 同在 `knowwhao.github.io` 一個 origin，鍵名一律 `trip-` 開頭，不可撞名
 - **改 schema**：每張表都要開 RLS、有 `trip_all` policy（子表 `using`／`with check` 都是 `trip_id in (select my_trip_ids())`）、
-  明確 grant 給 anon／authenticated（預設權限已收回）且收回 truncate（唯一例外是 `accounts`：完全不授權、沒有 policy，只能經函式存取）；子表參照旅伴／景點一律用帶 `trip_id` 的複合外鍵；
+  明確 grant 給 anon／authenticated（預設權限已收回）且收回 truncate（唯一例外是 `accounts`：完全不授權、沒有 policy，只能經函式存取；
+  代購清單 `wish_items`／`wish_photos` 的 `trip_all` 另外要 `owner_id = (select current_account_id())`，不要放寬成全旅程可見）；子表參照旅伴／景點一律用帶 `trip_id` 的複合外鍵；
   新增 view 一律 `with (security_invoker = true)`；新增函式要 `revoke execute ... from public` 再明確 grant；
-  有內容欄位的表要掛 `bump_version` 觸發器（排序欄位列在它的 skip 清單裡）；新欄位一律寫在「後來加的欄位」段落用 `add column if not exists`，跨欄位 check 用具名 constraint 包在 `if not exists` 裡；
+  有內容欄位的表要掛 `bump_version` 觸發器（排序欄位列在它的 skip 清單裡，單張表另外不算的欄位用觸發器參數，例如 `wish_items` 的 status、spot_id）；新欄位一律寫在「後來加的欄位」段落用 `add column if not exists`，跨欄位 check 用具名 constraint 包在 `if not exists` 裡；
   `schema.sql` 要可重複執行，也要能套在舊版 DB 上升級；改完用 PGlite（`@electric-sql/pglite`，不在依賴內，臨時裝在專案外）
   實跑 `schema.sql` 兩次，需先替身 `anon`／`authenticated` 角色，以 `set_config('request.headers', '{"x-account-id":"…","x-account-key":"…"}', true)` 模擬 header，
   驗沒登入／憑證錯誤讀不到也寫不進、不是成員碰不到那一趟；並同步 `src/types.ts`、兩個 repo 實作與 `src/data/demoSeed.ts`
@@ -37,6 +39,8 @@ npm run build        # vue-tsc 型別檢查 + vite build 到 dist/
   `keep_one_member` 觸發器擋最後一位成員離開，`sync_member_name` 讓成員名字固定是帳號名稱
 - **同時編輯**：改內容一律帶 version（樂觀鎖），版本不符要丟 `ConflictError` 讓畫面走 `saveWithConflict()`；
   寫入一律經 `trip` store 的 `mutate()`（成功後會廣播通知其他人並重讀）；拖曳排序只改 `day`／`sort_key`、子項目打勾只改 `done`，都不檢查版本
+- **代購照片**：前端壓成 JPEG data URL 存進資料庫（不用 Storage，權限才能沿用 RLS）；大小與張數上限在 `src/lib/image.ts`、`MAX_WISH_PHOTOS`，要與 schema 的 check 和 `limit_wish_photos` 一致；
+  `loadTrip` 只讀照片清單，圖片經 `src/composables/usePhoto.ts` 另外讀並快取；Demo 模式的圖片存在 IndexedDB（`src/data/demoPhotos.ts`），localStorage 放不下
 - **帳號**：密碼格式與鎖定次數在 `src/lib/pin.ts`，要與 `schema.sql` 一致；使用者清單（`list_accounts()`）只給登入的人，不要回傳名稱以外的欄位
 - **改金額或結算邏輯**：先在 `src/lib/split.test.ts` 補會失敗的測試，再改 `split.ts`；結算金額一律新台幣整數，外幣在換算時才四捨五入
 - **手機版**：375px 寬不可水平溢出（`document.documentElement.scrollWidth` 不得大於視窗寬）
@@ -58,13 +62,15 @@ npm run build        # vue-tsc 型別檢查 + vite build 到 dist/
   `src/views/AuthView.vue`：登入／註冊（註冊時即時檢查名稱）；`src/components/AccountModal.vue`：改密碼、登出
 - `src/stores/trip.ts`：目前開啟的旅程、讀取／重讀、`mutate()`、拖曳的樂觀更新、彙整的 computed（含 `me`：自己在這趟的旅伴資料）
 - `src/composables/useConflict.ts`：`saveWithConflict()`，別人改過時問「用我的覆蓋／看最新版本」
-- `src/router.ts`：`/` 我的旅程（`HomeView` 向伺服器讀自己參加的旅程）、`/trips/:tripId`（`TripLayout` 底下行程／旅費／設定）
+- `src/router.ts`：`/` 我的旅程（`HomeView` 向伺服器讀自己參加的旅程）、`/trips/:tripId`（`TripLayout` 底下行程／旅費／代購／設定）
 - 成員：`src/views/TripSettingsView.vue` 的旅伴區塊（加入、移出、已移出的加回或刪掉、退出）、`src/components/MemberPickerModal.vue`（列出註冊使用者）、
   `TripFormModal.vue` 建立旅程時勾選成員
 - 行程：`src/views/ItineraryView.vue`（已過的天收合）、`src/components/SpotList.vue`（SortableJS，拖完先把 DOM 放回原位再改資料）、`SpotCard.vue`、`SpotFormModal.vue`；
   子項目：`SpotItems.vue`（卡片裡的子清單，各行程各自一組 Sortable）、`ItemFormModal.vue`、`src/composables/useExpanded.ts`（展開狀態）；
   行程的旅費：`SpotExpensesModal.vue`（依 `expenses.spot_id`，從行程記帳以 `ExpenseFormModal` 的 `preset` 帶入行程與日期）
-- 旅費：`src/views/ExpensesView.vue`（含代購待收）、`src/components/ExpenseFormModal.vue`（分攤與代購）、`TransferModal.vue`
+- 旅費：`src/views/ExpensesView.vue`（含代購待收）、`src/components/ExpenseFormModal.vue`（分攤與代購；`preset` 帶行程時列出這個行程的代購清單項目，帶 `wish` 時直接變成代購列）、`TransferModal.vue`
+- 代購清單：`src/views/WishListView.vue`（`/trips/:tripId/shopping`，分組、篩選、勾選記帳）、`src/components/WishItemModal.vue`（編輯與照片）、`SpotWishModal.vue`（行程卡片的代購）、
+  `WishThumb.vue`／`PhotoViewer.vue`；購物行程的「要在這裡買嗎」在 `SpotFormModal.vue`；`src/lib/wish.ts`、`src/lib/image.ts`
 - `supabase/schema.sql`：資料表、RLS、`current_account_id()`／`my_trip_ids()`、`bump_version()`、`create_trip()`／`add_trip_member()`／`remove_trip_member()`／`save_expense()`、帳號函式
 - `.github/workflows/deploy.yml`：測試、打包、部署 Pages；`keepalive.yml`：每日不帶登入憑證 GET trips，預期 `[]`
 - `vite.config.ts`：`base` 依 `VITE_BASE`／`GITHUB_REPOSITORY` 決定、PWA manifest
@@ -77,7 +83,8 @@ npm run build        # vue-tsc 型別檢查 + vite build 到 dist/
 - 實際扣款（外幣旅費照帳單金額換算，指定金額時依比例分配且加總恰好等於扣款）→ README「實際扣款」、`expenseDues`／`expenseTwd`
 - 行程類型與預約提醒（預設不提醒、住宿預設提醒、餐廳的現場排隊存成 none、口袋名單與已過的天不算待辦）→ README「類型與預約狀態」、`src/lib/category.ts`
 - 航班、已過的天、地圖圖示何時顯示 → README「功能」的行程段落
-- 代購（不進旅伴結算、平分時先扣掉、實際扣款一起依比例分配、代購待收）→ README「代購」、`expenseDues` 的 `proxyDues`／`proxyCollections`
+- 代購（不進旅伴結算、平分時先扣掉、實際扣款一起依比例分配、代購待收）→ README「代購」、`expenseDues` 的 `proxyDues`／`proxyCollections`／`proxyTwdById`
+- 代購清單（只有自己看得到、照片上限、購物行程提示、從行程或清單記帳、記帳後自動已買）→ README「代購清單」
 - 要收／要付（全體加總必為 0）與最少轉帳 → README「要收／要付與轉帳建議」、`netBalances`／`simplifyDebts`
 - 同時編輯的行為 → README「同時編輯」
 - 子項目（一個行程底下多間店）→ README「功能」的行程段落
