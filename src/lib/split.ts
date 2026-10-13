@@ -1,4 +1,4 @@
-import type { Expense, ExpenseShare, Id, Participant, Transfer, Trip } from '@/types'
+import type { Expense, ExpenseProxy, ExpenseShare, Id, Participant, Transfer, Trip } from '@/types'
 import { fromMinor, toMinor, toTwd } from './money'
 
 export interface DueShare {
@@ -7,9 +7,17 @@ export interface DueShare {
   due: number
 }
 
+export interface ProxyDue {
+  name: string
+  /** 新台幣整數 */
+  due: number
+}
+
 export interface ExpenseDues {
   dues: DueShare[]
-  /** 費用換成新台幣的金額 */
+  /** 代購的部分，與 dues 同樣換成新台幣，但不進旅伴之間的結算 */
+  proxyDues: ProxyDue[]
+  /** 費用換成新台幣的金額（含代購） */
   twdTotal: number
   /** 付錢的人因進位或四捨五入多收（負數是少收）的新台幣 */
   surplus: number
@@ -28,6 +36,7 @@ export interface SplitData {
   participants: Pick<Participant, 'id'>[]
   expenses: Expense[]
   shares: ExpenseShare[]
+  proxies?: ExpenseProxy[]
   transfers: Transfer[]
 }
 
@@ -54,30 +63,46 @@ function apportion(total: number, weights: number[]): number[] {
 
 /**
  * 一筆費用每人要付多少新台幣
- * 平分：先把總額換成新台幣，每人無條件進位，零頭由付錢的人多收（與球友記帳相同）
- * 指定金額：沒有實際扣款金額時，每人的金額各自用旅程匯率換算後四捨五入；
- * 有實際扣款金額時，依每人金額的比例分配扣款金額，加總恰好等於扣款金額
+ * 平分：先把總額換成新台幣、扣掉代購，旅伴每人無條件進位，零頭由付錢的人多收（與球友記帳相同）
+ * 指定金額：沒有實際扣款金額時，每人（含代購）的金額各自用旅程匯率換算後四捨五入；
+ * 有實際扣款金額時，依每人（含代購）金額的比例分配扣款金額，加總恰好等於扣款金額
  */
 export function expenseDues(
   expense: Pick<Expense, 'amount' | 'currency' | 'split_mode'> & Partial<Pick<Expense, 'twd_amount'>>,
   shares: Pick<ExpenseShare, 'participant_id' | 'amount'>[],
   trip: FxInput,
+  proxies: Pick<ExpenseProxy, 'name' | 'amount'>[] = [],
 ): ExpenseDues {
-  const charged = expense.currency !== 'TWD' && expense.twd_amount != null ? expense.twd_amount : null
-  const twdTotal = charged ?? toTwd(expense.amount, expense.currency, trip.fx_rate)
+  const code = expense.currency
+  const charged = code !== 'TWD' && expense.twd_amount != null ? expense.twd_amount : null
+  const twdTotal = charged ?? toTwd(expense.amount, code, trip.fx_rate)
+  const proxyMinor = proxies.map((p) => toMinor(p.amount, code))
   let dues: DueShare[]
+  let proxyTwd: number[]
   if (expense.split_mode === 'custom') {
-    const parts = charged !== null ? apportion(charged, shares.map((s) => toMinor(s.amount ?? 0, expense.currency))) : null
+    const parts = charged !== null ? apportion(charged, [...shares.map((s) => toMinor(s.amount ?? 0, code)), ...proxyMinor]) : null
     dues = shares
-      .map((s, i) => ({ participant_id: s.participant_id, due: parts ? parts[i] : toTwd(s.amount ?? 0, expense.currency, trip.fx_rate) }))
+      .map((s, i) => ({ participant_id: s.participant_id, due: parts ? parts[i] : toTwd(s.amount ?? 0, code, trip.fx_rate) }))
       .filter((d) => d.due > 0)
+    proxyTwd = proxies.map((p, i) => (parts ? parts[shares.length + i] : toTwd(p.amount, code, trip.fx_rate)))
   } else {
+    let travellerTwd: number
+    if (charged !== null) {
+      const rest = Math.max(0, toMinor(expense.amount, code) - proxyMinor.reduce((s, v) => s + v, 0))
+      const parts = apportion(charged, [rest, ...proxyMinor])
+      travellerTwd = parts[0]
+      proxyTwd = parts.slice(1)
+    } else {
+      proxyTwd = proxies.map((p) => toTwd(p.amount, code, trip.fx_rate))
+      travellerTwd = Math.max(0, twdTotal - proxyTwd.reduce((s, v) => s + v, 0))
+    }
     const ids = [...new Set(shares.map((s) => s.participant_id))]
-    const perHead = ids.length ? Math.ceil(twdTotal / ids.length) : 0
+    const perHead = ids.length ? Math.ceil(travellerTwd / ids.length) : 0
     dues = ids.map((participant_id) => ({ participant_id, due: perHead }))
   }
-  const sum = dues.reduce((s, d) => s + d.due, 0)
-  return { dues, twdTotal, surplus: dues.length ? sum - twdTotal : 0 }
+  const proxyDues = proxies.map((p, i) => ({ name: p.name.trim(), due: proxyTwd[i] }))
+  const sum = dues.reduce((s, d) => s + d.due, 0) + proxyDues.reduce((s, d) => s + d.due, 0)
+  return { dues, proxyDues, twdTotal, surplus: dues.length || proxyDues.length ? sum - twdTotal : 0 }
 }
 
 export function groupShares<T extends Pick<ExpenseShare, 'expense_id'>>(shares: T[]): Map<Id, T[]> {
@@ -90,6 +115,23 @@ export function groupShares<T extends Pick<ExpenseShare, 'expense_id'>>(shares: 
   return map
 }
 
+export function groupProxies(proxies: ExpenseProxy[] = []): Map<Id, ExpenseProxy[]> {
+  const map = new Map<Id, ExpenseProxy[]>()
+  for (const p of proxies) {
+    const list = map.get(p.expense_id)
+    if (list) list.push(p)
+    else map.set(p.expense_id, [p])
+  }
+  return map
+}
+
+/** 一筆費用的分攤結果，代購一起算進去 */
+function duesOf(data: SplitData) {
+  const byExpense = groupShares(data.shares)
+  const byProxy = groupProxies(data.proxies)
+  return (e: Expense) => expenseDues(e, byExpense.get(e.id) ?? [], data.trip, byProxy.get(e.id) ?? [])
+}
+
 function add(map: Map<Id, number>, id: Id, delta: number) {
   map.set(id, (map.get(id) ?? 0) + delta)
 }
@@ -97,10 +139,10 @@ function add(map: Map<Id, number>, id: Id, delta: number) {
 /** 每人淨額（新台幣）：正數＝別人要給他，負數＝他要給別人；全體加總必為 0 */
 export function netBalances(data: SplitData): Map<Id, number> {
   const bal = new Map<Id, number>(data.participants.map((p) => [p.id, 0]))
-  const byExpense = groupShares(data.shares)
+  const dues = duesOf(data)
   for (const e of data.expenses) {
-    // 付錢的人入帳的是分攤加總而非實付金額，全體加總才會恰好為 0
-    for (const d of expenseDues(e, byExpense.get(e.id) ?? [], data.trip).dues) {
+    // 付錢的人入帳的是旅伴的分攤加總而非實付金額，全體加總才會恰好為 0；代購不在其中，由付錢的人自己收
+    for (const d of dues(e).dues) {
       add(bal, e.payer_id, d.due)
       add(bal, d.participant_id, -d.due)
     }
@@ -136,7 +178,7 @@ export function simplifyDebts(balances: Map<Id, number>): Settlement[] {
 
 export interface ParticipantSummary {
   participant_id: Id
-  /** 代墊的費用（新台幣） */
+  /** 代墊的費用（新台幣），不含代購 */
   paid: number
   /** 自己實際負擔的費用（新台幣） */
   share: number
@@ -147,10 +189,10 @@ export interface ParticipantSummary {
 export function summaries(data: SplitData): ParticipantSummary[] {
   const paid = new Map<Id, number>()
   const share = new Map<Id, number>()
-  const byExpense = groupShares(data.shares)
+  const duesFor = duesOf(data)
   for (const e of data.expenses) {
-    const { dues, twdTotal } = expenseDues(e, byExpense.get(e.id) ?? [], data.trip)
-    add(paid, e.payer_id, twdTotal)
+    const { dues, proxyDues, twdTotal } = duesFor(e)
+    add(paid, e.payer_id, twdTotal - proxyDues.reduce((s, d) => s + d.due, 0))
     for (const d of dues) add(share, d.participant_id, d.due)
   }
   const net = netBalances(data)
@@ -160,6 +202,32 @@ export function summaries(data: SplitData): ParticipantSummary[] {
     share: share.get(p.id) ?? 0,
     net: net.get(p.id) ?? 0,
   }))
+}
+
+export interface ProxyCollection {
+  payer_id: Id
+  name: string
+  /** 新台幣 */
+  amount: number
+  /** 幾筆旅費 */
+  count: number
+}
+
+/** 代購待收：每位付錢的人要跟每個代購對象收多少（同名合併） */
+export function proxyCollections(data: SplitData): ProxyCollection[] {
+  const map = new Map<string, ProxyCollection>()
+  const duesFor = duesOf(data)
+  for (const e of data.expenses) {
+    for (const d of duesFor(e).proxyDues) {
+      const key = `${e.payer_id}\u0000${d.name}`
+      const row = map.get(key)
+      if (row) {
+        row.amount += d.due
+        row.count++
+      } else map.set(key, { payer_id: e.payer_id, name: d.name, amount: d.due, count: 1 })
+    }
+  }
+  return [...map.values()]
 }
 
 /** 指定金額時還沒分配的金額（負數是分配超過） */

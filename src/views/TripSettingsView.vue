@@ -1,7 +1,7 @@
 <script setup lang="ts">
 import { computed, ref } from 'vue'
 import { useRouter } from 'vue-router'
-import { Check, Link, LogOut, Pencil, Plus, Trash2, UserMinus, UserPlus, X } from 'lucide-vue-next'
+import { LogOut, Pencil, Trash2, UserMinus, UserPlus } from 'lucide-vue-next'
 import ParticipantAvatar from '@/components/ParticipantAvatar.vue'
 import ThemeToggle from '@/components/ThemeToggle.vue'
 import TripFormModal from '@/components/TripFormModal.vue'
@@ -61,56 +61,12 @@ async function saveTrip(input: TripInput) {
 }
 
 // ---------- 旅伴 ----------
-const newNames = ref('')
-const adding = ref(false)
-const renamingId = ref<string | null>(null)
-const renameText = ref('')
-const renameBase = ref<Participant | null>(null)
-
-async function addPeople() {
-  const existing = new Set(store.participants.map((p) => p.name))
-  const names = [...new Set(newNames.value.split(/[\s,，、]+/).map((s) => s.trim()).filter(Boolean))]
-  if (!names.length) return
-  const dup = names.filter((n) => existing.has(n))
-  if (dup.length) return toast.error(`已經有 ${dup.join('、')} 了`)
-  if (names.some((n) => [...n].length > 20)) return toast.error('每個名字最多 20 個字')
-  adding.value = true
-  try {
-    const start = Math.max(-1, ...store.participants.map((p) => p.sort_order)) + 1
-    await store.mutate(() => repo.addParticipants(names.map((name, i) => ({ name, sort_order: start + i }))))
-    newNames.value = ''
-  } catch (e) {
-    toast.error(errorMessage(e))
-  } finally {
-    adding.value = false
-  }
-}
-
-function startRename(p: Participant) {
-  renamingId.value = p.id
-  renameText.value = p.name
-  renameBase.value = p
-}
-
-async function saveRename() {
-  const target = renameBase.value
-  const name = renameText.value.trim()
-  if (!target) return
-  if (!name || name === target.name) {
-    renamingId.value = null
-    return
-  }
-  if ([...name].length > 20) return toast.error('名字最多 20 個字')
-  const outcome = await saveWithConflict('位旅伴', (useLatest) =>
-    store.mutate(() =>
-      repo.renameParticipant(target.id, useLatest ? (store.participantMap.get(target.id)?.version ?? target.version) : target.version, name),
-    ),
-  )
-  if (outcome !== 'failed') renamingId.value = null
-}
+// 被移出的人排在最後；他們的旅費紀錄還在，照常結算
+const members = computed(() => store.participants.filter((p) => p.account_id))
+const formerMembers = computed(() => store.participants.filter((p) => !p.account_id))
 
 async function removePerson(p: Participant) {
-  const ok = await confirmDialog({ title: `移除 ${p.name}？`, confirmText: '移除', danger: true })
+  const ok = await confirmDialog({ title: `刪掉 ${p.name}？`, message: '只有沒有任何旅費或轉帳紀錄時才能刪掉。', confirmText: '刪掉', danger: true })
   if (!ok) return
   try {
     await store.mutate(() => repo.deleteParticipant(p.id))
@@ -120,13 +76,13 @@ async function removePerson(p: Participant) {
 }
 
 // ---------- 成員 ----------
-/** add：加入成員；Participant：把這位只記帳的旅伴換成帳號 */
+/** add：加入成員；Participant：把這位已移出的人加回來 */
 const picker = ref<'add' | Participant | null>(null)
 const memberIds = computed(() => store.participants.flatMap((p) => (p.account_id ? [p.account_id] : [])))
-const pickerTitle = computed(() => (picker.value && picker.value !== 'add' ? `「${picker.value.name}」是哪個帳號？` : '加入成員'))
+const pickerTitle = computed(() => (picker.value && picker.value !== 'add' ? `把「${picker.value.name}」加回旅程` : '加入成員'))
 const pickerHint = computed(() =>
   picker.value && picker.value !== 'add'
-    ? `換成帳號後，${picker.value.name} 的旅費紀錄都會保留，名字改成帳號名稱，登入後就看得到這趟旅程。`
+    ? `選他的帳號：${picker.value.name} 之前的旅費紀錄會接回去，名字改成帳號名稱，登入後就看得到這趟旅程。`
     : '加進來的人登入後就能看到並編輯這趟旅程。名單是所有註冊的使用者，找不到人的話請他先註冊。',
 )
 
@@ -136,7 +92,7 @@ async function pick(a: AccountInfo) {
   try {
     if (target && target !== 'add') {
       await store.mutate(() => repo.addMember(a.id, target.id))
-      toast.success(`${target.name} 已換成 ${a.name} 的帳號`)
+      toast.success(`已把 ${a.name} 加回旅程`)
     } else {
       await store.mutate(() => repo.addMember(a.id))
       toast.success(`已把 ${a.name} 加進旅程`)
@@ -149,7 +105,7 @@ async function pick(a: AccountInfo) {
 async function removeMember(p: Participant) {
   const ok = await confirmDialog({
     title: `把 ${p.name} 移出旅程？`,
-    message: `${p.name} 會看不到這趟旅程；旅費紀錄會留著，名字變成只記帳的旅伴。之後可以再加回來。`,
+    message: `${p.name} 會看不到這趟旅程；他的旅費紀錄會留著、照常結算。之後可以再加回來。`,
     confirmText: '移出',
     danger: true,
   })
@@ -227,44 +183,33 @@ async function destroy() {
 
     <section class="card p-5">
       <div class="flex items-start justify-between gap-3">
-        <h2 class="section-title">旅伴（{{ store.participants.length }}）</h2>
+        <h2 class="section-title">旅伴（{{ members.length }}）</h2>
         <button type="button" class="btn-ghost -my-2 -mr-2 px-3 py-1.5" @click="picker = 'add'"><UserPlus class="size-4" />加入成員</button>
       </div>
-      <p class="mt-1 text-xs leading-relaxed text-ink-400">成員看得到也能編輯這趟旅程，任何成員都能加人或移出；只記帳的旅伴只用來分旅費。</p>
+      <p class="mt-1 text-xs leading-relaxed text-ink-400">旅伴都看得到也能編輯這趟旅程，任何人都能加人或移出。幫不是旅伴的人買東西，在記旅費時用「代購」。</p>
       <ul class="mt-3 space-y-1">
-        <li v-for="p in store.participants" :key="p.id" class="flex min-h-11 items-center gap-2.5">
+        <li v-for="p in members" :key="p.id" class="flex min-h-11 items-center gap-2.5">
           <ParticipantAvatar :id="p.id" :name="p.name" />
-          <template v-if="renamingId === p.id">
-            <form class="flex min-w-0 flex-1 gap-1" @submit.prevent="saveRename">
-              <label :for="`rename-${p.id}`" class="sr-only">新名字</label>
-              <input :id="`rename-${p.id}`" v-model="renameText" class="input min-w-0 flex-1 py-1.5" maxlength="20" autocomplete="off" />
-              <button type="submit" class="icon-btn shrink-0" aria-label="儲存"><Check class="size-4" /></button>
-              <button type="button" class="icon-btn shrink-0" aria-label="取消" @click="renamingId = null"><X class="size-4" /></button>
-            </form>
-          </template>
-          <template v-else>
-            <span class="min-w-0 flex-1">
-              <span class="block truncate font-semibold">{{ p.name }}</span>
-              <span class="block text-xs text-ink-400">{{ p.id === store.me?.id ? '你・成員' : p.account_id ? '成員' : '只記帳' }}</span>
-            </span>
-            <template v-if="p.account_id">
-              <button v-if="p.id !== store.me?.id" type="button" class="icon-btn shrink-0" :aria-label="`把 ${p.name} 移出旅程`" @click="removeMember(p)">
-                <UserMinus class="size-4" />
-              </button>
-            </template>
-            <template v-else>
-              <button type="button" class="icon-btn shrink-0" :aria-label="`把 ${p.name} 換成註冊的帳號`" title="換成帳號" @click="picker = p"><Link class="size-4" /></button>
-              <button type="button" class="icon-btn shrink-0" :aria-label="`改 ${p.name} 的名字`" @click="startRename(p)"><Pencil class="size-4" /></button>
-              <button type="button" class="icon-btn shrink-0" :aria-label="`移除 ${p.name}`" @click="removePerson(p)"><Trash2 class="size-4" /></button>
-            </template>
-          </template>
+          <span class="min-w-0 flex-1">
+            <span class="block truncate font-semibold">{{ p.name }}</span>
+            <span v-if="p.id === store.me?.id" class="block text-xs text-ink-400">你</span>
+          </span>
+          <button v-if="p.id !== store.me?.id" type="button" class="icon-btn shrink-0" :aria-label="`把 ${p.name} 移出旅程`" @click="removeMember(p)">
+            <UserMinus class="size-4" />
+          </button>
         </li>
       </ul>
-      <form class="mt-3 flex gap-2" @submit.prevent="addPeople">
-        <label for="new-people" class="sr-only">新增只記帳的旅伴</label>
-        <input id="new-people" v-model="newNames" class="input min-w-0 flex-1" placeholder="只記帳的旅伴名字" autocomplete="off" />
-        <button type="submit" class="btn-dark shrink-0" :disabled="adding || !newNames.trim()"><Plus class="size-4" />新增</button>
-      </form>
+      <template v-if="formerMembers.length">
+        <p class="mt-4 mb-1 text-xs font-bold text-ink-400">已移出（旅費紀錄照常結算）</p>
+        <ul class="space-y-1">
+          <li v-for="p in formerMembers" :key="p.id" class="flex min-h-11 items-center gap-2.5 opacity-70">
+            <ParticipantAvatar :id="p.id" :name="p.name" />
+            <span class="min-w-0 flex-1 truncate font-semibold">{{ p.name }}</span>
+            <button type="button" class="icon-btn shrink-0" :aria-label="`把 ${p.name} 加回旅程`" title="加回旅程" @click="picker = p"><UserPlus class="size-4" /></button>
+            <button type="button" class="icon-btn shrink-0" :aria-label="`刪掉 ${p.name}`" @click="removePerson(p)"><Trash2 class="size-4" /></button>
+          </li>
+        </ul>
+      </template>
     </section>
 
     <section class="card flex items-center justify-between gap-3 p-5">

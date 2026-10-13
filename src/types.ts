@@ -109,6 +109,18 @@ export interface ExpenseShare {
   amount: number | null
 }
 
+/** 代購：幫不是旅伴的人買的部分，不進旅伴之間的結算，由付錢的人自己跟對方收 */
+export interface ExpenseProxy {
+  id: Id
+  expense_id: Id
+  /** 代購對象，例如「媽媽」 */
+  name: string
+  /** 與費用同幣別 */
+  amount: number
+}
+
+export type ProxyInput = Pick<ExpenseProxy, 'name' | 'amount'>
+
 /** 已經轉的錢，一律新台幣整數 */
 export interface Transfer {
   id: Id
@@ -128,6 +140,7 @@ export interface TripData {
   items: SpotItem[]
   expenses: Expense[]
   shares: ExpenseShare[]
+  proxies: ExpenseProxy[]
   transfers: Transfer[]
 }
 

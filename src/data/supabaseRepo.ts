@@ -4,10 +4,12 @@ import type {
   AccountSession,
   Expense,
   ExpenseInput,
+  ExpenseProxy,
   ExpenseShare,
   Id,
   Participant,
   PinResult,
+  ProxyInput,
   ShareInput,
   Spot,
   SpotInput,
@@ -131,7 +133,7 @@ export class SupabaseRepo implements TripRepository {
     return check(await this.sb.from('trips').select('id, name, start_date, end_date').order('start_date')) as TripSummary[]
   }
 
-  async createTrip(input: TripInput, members: Id[], names: string[]) {
+  async createTrip(input: TripInput, members: Id[]) {
     return check(
       await this.sb.rpc('create_trip', {
         p_name: input.name,
@@ -140,7 +142,6 @@ export class SupabaseRepo implements TripRepository {
         p_currency: input.currency,
         p_fx_rate: input.fx_rate,
         p_members: members,
-        p_names: names,
       }),
     ) as Id
   }
@@ -180,13 +181,14 @@ export class SupabaseRepo implements TripRepository {
 
   async loadTrip(): Promise<TripData> {
     const id = this.requireTrip()
-    const [trip, participants, spots, items, expenses, shares, transfers] = await Promise.all([
+    const [trip, participants, spots, items, expenses, shares, proxies, transfers] = await Promise.all([
       this.sb.from('trips').select('*').eq('id', id).maybeSingle(),
       this.sb.from('participants').select('*').eq('trip_id', id).order('sort_order').order('created_at'),
       this.sb.from('spots').select('*').eq('trip_id', id).order('sort_key'),
       this.sb.from('spot_items').select('*').eq('trip_id', id).order('sort_key'),
       this.sb.from('expenses').select('*').eq('trip_id', id),
       this.sb.from('expense_shares').select('expense_id, participant_id, amount').eq('trip_id', id),
+      this.sb.from('expense_proxies').select('id, expense_id, name, amount').eq('trip_id', id).order('sort_order'),
       this.sb.from('transfers').select('*').eq('trip_id', id),
     ])
     // 不是成員時 RLS 讓每張表都回 0 筆而不是報錯，以旅程那一列是否存在判斷
@@ -202,6 +204,7 @@ export class SupabaseRepo implements TripRepository {
       items: check(items) as SpotItem[],
       expenses: (check(expenses) as Expense[]).map((e) => ({ ...e, amount: Number(e.amount) })),
       shares: (check(shares) as ExpenseShare[]).map((s) => ({ ...s, amount: num(s.amount) })),
+      proxies: (check(proxies) as ExpenseProxy[]).map((p) => ({ ...p, amount: Number(p.amount) })),
       transfers: check(transfers) as Transfer[],
     }
   }
@@ -226,19 +229,6 @@ export class SupabaseRepo implements TripRepository {
 
   async removeMember(participantId: Id) {
     check(await this.sb.rpc('remove_trip_member', { p_participant: participantId }))
-  }
-
-  async addParticipants(rows: { name: string; sort_order: number }[]) {
-    const trip_id = this.requireTrip()
-    if (rows.length) check(await this.sb.from('participants').insert(rows.map((r) => ({ ...r, trip_id }))))
-  }
-
-  async renameParticipant(id: Id, version: number, name: string) {
-    await this.expectAffected(
-      await this.sb.from('participants').update({ name }).eq('id', id).eq('version', version).select('id'),
-      'fail',
-      this.rowExists('participants', id),
-    )
   }
 
   async deleteParticipant(id: Id) {
@@ -305,8 +295,10 @@ export class SupabaseRepo implements TripRepository {
     await this.expectAffected(await this.sb.from('spot_items').delete().eq('id', id).select('id'), 'ignore')
   }
 
-  async saveExpense(input: ExpenseInput, shares: ShareInput[]) {
-    return check(await this.sb.rpc('save_expense', { p_trip: this.requireTrip(), p_expense: input, p_shares: shares })) as Id
+  async saveExpense(input: ExpenseInput, shares: ShareInput[], proxies: ProxyInput[]) {
+    return check(
+      await this.sb.rpc('save_expense', { p_trip: this.requireTrip(), p_expense: input, p_shares: shares, p_proxies: proxies }),
+    ) as Id
   }
 
   async deleteExpense(id: Id) {

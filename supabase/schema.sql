@@ -9,7 +9,8 @@
 -- my_trip_ids() 列出這個帳號參加的旅程，RLS 一律以 trip_id in my_trip_ids() 比對；
 -- 子表之間的外鍵都帶 trip_id，參照不到別趟旅程的資料
 --
--- 旅伴（participants）有兩種：account_id 有值的是成員（看得到、能編輯），null 的是只有名字的旅伴（只用來分旅費）
+-- 旅伴（participants）account_id 有值的是成員（看得到、能編輯）；被移出的人 account_id 變 null，留著名字讓旅費紀錄照常結算
+-- 幫不是旅伴的人買的部分記在 expense_proxies（代購），不進旅伴之間的結算
 --
 -- 同時編輯：內容欄位改動時 version 自動 +1，前端以 version 做樂觀鎖，
 -- 版本對不上（別人剛改過）時更新 0 列，前端再判斷是衝突、資料已刪除還是已經不是成員
@@ -163,12 +164,24 @@ create table if not exists public.spot_items (
   foreign key (spot_id, trip_id) references public.spots (id, trip_id) on delete cascade
 );
 
+-- 代購：一筆旅費裡幫不是旅伴的人買的部分，付錢的人自己跟對方收；只能經 save_expense() 連同費用一起寫
+create table if not exists public.expense_proxies (
+  id         uuid primary key default gen_random_uuid(),
+  expense_id uuid not null,
+  trip_id    uuid not null references public.trips (id) on delete cascade,
+  name       text not null check (length(btrim(name)) between 1 and 20),
+  -- 與費用同幣別
+  amount     numeric(14, 2) not null check (amount > 0 and amount < 100000000),
+  sort_order int not null default 0,
+  foreign key (expense_id, trip_id) references public.expenses (id, trip_id) on delete cascade
+);
+
 -- ---------- 清除舊版（旅程連結版）殘留 ----------
 -- 舊版以 x-trip-token 比對旅程連結；policy 依賴 current_trip_id()，要先拆掉 policy 才能刪函式，下方 RLS 段落會重建
 do $$
 declare t text;
 begin
-  foreach t in array array['trips', 'participants', 'spots', 'expenses', 'expense_shares', 'transfers', 'spot_items'] loop
+  foreach t in array array['trips', 'participants', 'spots', 'expenses', 'expense_shares', 'transfers', 'spot_items', 'expense_proxies'] loop
     execute format('drop policy if exists trip_all on public.%I', t);
   end loop;
 end;
@@ -176,6 +189,9 @@ $$;
 drop function if exists public.regenerate_trip_token();
 drop function if exists public.create_trip(text, date, date, text, numeric, text[]);
 drop function if exists public.save_expense(jsonb, jsonb);
+-- 只記帳旅伴與代購之前的版本
+drop function if exists public.create_trip(text, date, date, text, numeric, uuid[], text[]);
+drop function if exists public.save_expense(uuid, jsonb, jsonb);
 drop function if exists public.account_list_trips(uuid, text);
 drop function if exists public.account_save_trip(uuid, text, text);
 drop function if exists public.account_remove_trip(uuid, text, uuid);
@@ -240,6 +256,8 @@ create index if not exists expense_shares_trip_idx on public.expense_shares (tri
 create index if not exists transfers_trip_idx on public.transfers (trip_id);
 create index if not exists spot_items_trip_idx on public.spot_items (trip_id);
 create index if not exists spot_items_spot_idx on public.spot_items (spot_id);
+create index if not exists expense_proxies_trip_idx on public.expense_proxies (trip_id);
+create index if not exists expense_proxies_expense_idx on public.expense_proxies (expense_id);
 
 -- ---------- 版本號 ----------
 
@@ -373,7 +391,7 @@ create policy trip_all on public.trips for all to anon, authenticated
 do $$
 declare t text;
 begin
-  foreach t in array array['participants', 'spots', 'expenses', 'expense_shares', 'transfers', 'spot_items'] loop
+  foreach t in array array['participants', 'spots', 'expenses', 'expense_shares', 'transfers', 'spot_items', 'expense_proxies'] loop
     execute format('alter table public.%I enable row level security', t);
     -- TRUNCATE 不受 RLS 約束，只能靠收回權限擋下
     execute format('revoke truncate, trigger, references on public.%I from anon, authenticated', t);
@@ -390,10 +408,9 @@ revoke insert, update on public.trips from anon, authenticated;
 grant select, delete on public.trips to anon, authenticated;
 grant update (name, start_date, end_date, currency, fx_rate) on public.trips to anon, authenticated;
 
--- 成員（account_id）只能經 add_trip_member()／remove_trip_member() 異動，直接新增的都是只有名字的旅伴
+-- 旅伴只能經 create_trip()／add_trip_member()／remove_trip_member() 新增或異動；表層級的 revoke 會一併收回舊版給的欄位權限
+-- 只留 delete：被移出、沒有任何紀錄的人可以刪掉（有紀錄的會被外鍵擋下）
 revoke insert, update on public.participants from anon, authenticated;
-grant insert (trip_id, name, sort_order) on public.participants to anon, authenticated;
-grant update (name, sort_order) on public.participants to anon, authenticated;
 
 -- accounts 是唯一不授權的表：讀得到就等於拿到雜湊與登入憑證；開 RLS 不設 policy 只是保險
 alter table public.accounts enable row level security;
@@ -570,9 +587,9 @@ $$;
 
 -- ---------- 旅程 RPC ----------
 
--- 建立者自動成為成員；p_members 是要一起加進來的帳號，p_names 是沒有帳號、只有名字的旅伴
+-- 建立者自動成為成員；p_members 是要一起加進來的帳號
 create or replace function public.create_trip(
-  p_name text, p_start date, p_end date, p_currency text, p_fx_rate numeric, p_members uuid[], p_names text[])
+  p_name text, p_start date, p_end date, p_currency text, p_fx_rate numeric, p_members uuid[])
 returns uuid
 language plpgsql
 volatile
@@ -583,13 +600,13 @@ declare
   v_me uuid := public.require_account();
   t public.trips;
 begin
-  if coalesce(array_length(p_members, 1), 0) + coalesce(array_length(p_names, 1), 0) > 50 then
-    raise exception 'too many participants' using errcode = '22023';
+  if coalesce(array_length(p_members, 1), 0) > 50 then
+    raise exception 'too many members' using errcode = '22023';
   end if;
   insert into public.trips (name, start_date, end_date, currency, fx_rate)
   values (btrim(p_name), p_start, p_end, upper(p_currency), p_fx_rate)
   returning * into t;
-  -- 自己排第一，接著是勾選的成員，最後是只有名字的旅伴；名字重複的略過
+  -- 自己排第一，接著是勾選的成員
   insert into public.participants (trip_id, name, sort_order, account_id)
   select t.id, a.name, 0, a.id from public.accounts a where a.id = v_me;
   insert into public.participants (trip_id, name, sort_order, account_id)
@@ -597,11 +614,6 @@ begin
     from unnest(p_members) with ordinality as x (aid, ord)
     join public.accounts a on a.id = x.aid
    where a.id <> v_me
-  on conflict do nothing;
-  insert into public.participants (trip_id, name, sort_order)
-  select t.id, btrim(n), 100 + o
-    from unnest(p_names) with ordinality as u (n, o)
-   where btrim(n) <> ''
   on conflict do nothing;
   return t.id;
 end;
@@ -673,9 +685,10 @@ begin
 end;
 $$;
 
--- 費用與分攤一起寫，避免只寫進一半；security invoker 讓 RLS 照常把關
+-- 費用、分攤與代購一起寫，避免只寫進一半；security invoker 讓 RLS 照常把關
 -- p_expense 帶 id 與 version 時是修改，版本不符丟 TP409、費用已不在丟 TP404
-create or replace function public.save_expense(p_trip uuid, p_expense jsonb, p_shares jsonb)
+-- 平分：旅伴平分扣掉代購後的金額（沒有旅伴時代購要等於總額）；指定金額：旅伴與代購加總要等於總額
+create or replace function public.save_expense(p_trip uuid, p_expense jsonb, p_shares jsonb, p_proxies jsonb)
 returns uuid
 language plpgsql
 volatile
@@ -688,6 +701,7 @@ declare
   v_currency text := p_expense ->> 'currency';
   v_mode text := p_expense ->> 'split_mode';
   v_found uuid;
+  v_proxy_sum numeric;
 begin
   if p_trip is null or p_trip not in (select public.my_trip_ids()) then
     raise exception 'not a member of this trip' using errcode = '42501';
@@ -695,13 +709,20 @@ begin
   if v_currency <> 'TWD' and v_currency <> (select currency from public.trips where id = p_trip) then
     raise exception 'currency must be TWD or the trip currency' using errcode = '22023';
   end if;
-  if jsonb_typeof(p_shares) <> 'array' or jsonb_array_length(p_shares) = 0 then
-    raise exception 'at least one share required' using errcode = '22023';
+  if jsonb_typeof(p_shares) <> 'array' or jsonb_typeof(p_proxies) <> 'array'
+     or jsonb_array_length(p_shares) + jsonb_array_length(p_proxies) = 0 then
+    raise exception 'at least one share or proxy required' using errcode = '22023';
   end if;
+  v_proxy_sum := coalesce((select sum((x ->> 'amount')::numeric) from jsonb_array_elements(p_proxies) x), 0);
   if v_mode = 'custom' and (
        exists (select 1 from jsonb_array_elements(p_shares) s where s ->> 'amount' is null)
-       or (select sum((s ->> 'amount')::numeric) from jsonb_array_elements(p_shares) s) <> v_amount) then
+       or coalesce((select sum((s ->> 'amount')::numeric) from jsonb_array_elements(p_shares) s), 0) + v_proxy_sum <> v_amount) then
     raise exception 'custom shares must add up to the amount' using errcode = '22023';
+  end if;
+  if v_mode = 'even' and (
+       (jsonb_array_length(p_shares) = 0 and v_proxy_sum <> v_amount)
+       or (jsonb_array_length(p_shares) > 0 and v_proxy_sum >= v_amount)) then
+    raise exception 'proxies must leave something to split' using errcode = '22023';
   end if;
 
   if v_id is null then
@@ -725,12 +746,16 @@ begin
       raise exception 'expense not found' using errcode = 'TP404';
     end if;
     delete from public.expense_shares where expense_id = v_id;
+    delete from public.expense_proxies where expense_id = v_id;
   end if;
 
   insert into public.expense_shares (expense_id, trip_id, participant_id, amount)
   select v_id, p_trip, (s ->> 'participant_id')::uuid,
          case when v_mode = 'custom' then (s ->> 'amount')::numeric end
     from jsonb_array_elements(p_shares) s;
+  insert into public.expense_proxies (expense_id, trip_id, name, amount, sort_order)
+  select v_id, p_trip, btrim(x ->> 'name'), (x ->> 'amount')::numeric, o
+    from jsonb_array_elements(p_proxies) with ordinality as u (x, o);
   return v_id;
 end;
 $$;
@@ -764,11 +789,11 @@ revoke execute on function public.whoami() from public;
 grant execute on function public.whoami() to anon, authenticated;
 revoke execute on function public.list_accounts() from public;
 grant execute on function public.list_accounts() to anon, authenticated;
-revoke execute on function public.create_trip(text, date, date, text, numeric, uuid[], text[]) from public;
-grant execute on function public.create_trip(text, date, date, text, numeric, uuid[], text[]) to anon, authenticated;
+revoke execute on function public.create_trip(text, date, date, text, numeric, uuid[]) from public;
+grant execute on function public.create_trip(text, date, date, text, numeric, uuid[]) to anon, authenticated;
 revoke execute on function public.add_trip_member(uuid, uuid, uuid) from public;
 grant execute on function public.add_trip_member(uuid, uuid, uuid) to anon, authenticated;
 revoke execute on function public.remove_trip_member(uuid) from public;
 grant execute on function public.remove_trip_member(uuid) to anon, authenticated;
-revoke execute on function public.save_expense(uuid, jsonb, jsonb) from public;
-grant execute on function public.save_expense(uuid, jsonb, jsonb) to anon, authenticated;
+revoke execute on function public.save_expense(uuid, jsonb, jsonb, jsonb) from public;
+grant execute on function public.save_expense(uuid, jsonb, jsonb, jsonb) to anon, authenticated;

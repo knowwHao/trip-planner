@@ -5,7 +5,8 @@ Vue 3 + Vite + TypeScript + Tailwind CSS v4 + Pinia + Vue Router（hash 模式�
 資料在 Supabase（未設定 env 時進 Demo 模式，存 localStorage）；部署在 GitHub Pages。
 一定要登入：帳號是名稱＋6～8 位數字密碼（做法同 sports-ledger 的成員密碼），沒登入時 `App.vue` 一律顯示 `AuthView`；
 登入憑證走 `x-account-id`／`x-account-key` header，RLS 只放行自己是成員（`participants.account_id`）的旅程；
-任何成員都能加人、移人（`add_trip_member()`／`remove_trip_member()`），旅程至少留一位成員；沒有帳號的旅伴是「只記帳」（`account_id` 為 null）。
+任何成員都能加人、移人（`add_trip_member()`／`remove_trip_member()`），旅程至少留一位成員；旅伴一律要有帳號，被移出的人 `account_id` 變 null、留著名字讓旅費照常結算。
+幫不是旅伴的人買的記成代購（`expense_proxies`），不進旅伴之間的結算，「旅費」頁另列代購待收。
 沒有旅程連結（舊版的 `#/t/<token>` 與 `trips.token` 已拿掉）。
 架構與做法沿用姊妹專案 `knowwHao/sports-ledger`（球友記帳）。人看的完整說明在 `README.md`。
 
@@ -31,8 +32,8 @@ npm run build        # vue-tsc 型別檢查 + vite build 到 dist/
   `schema.sql` 要可重複執行，也要能套在舊版 DB 上升級；改完用 PGlite（`@electric-sql/pglite`，不在依賴內，臨時裝在專案外）
   實跑 `schema.sql` 兩次，需先替身 `anon`／`authenticated` 角色，以 `set_config('request.headers', '{"x-account-id":"…","x-account-key":"…"}', true)` 模擬 header，
   驗沒登入／憑證錯誤讀不到也寫不進、不是成員碰不到那一趟；並同步 `src/types.ts`、兩個 repo 實作與 `src/data/demoSeed.ts`
-- **旅程與成員的寫入**：`trips` 只能經 `create_trip()` 新增（建立者自動成為成員）、`participants.account_id` 只能經 `add_trip_member()`／`remove_trip_member()` 異動，
-  不要重新 grant `trips` 的 insert 或 `participants` 的 `account_id`；旅費一律經 `save_expense()` 連同分攤一起寫；
+- **旅程與成員的寫入**：`trips` 只能經 `create_trip()` 新增（建立者自動成為成員）、`participants` 只能經 `create_trip()`／`add_trip_member()`／`remove_trip_member()` 新增或異動（只留 delete 權限），
+  不要重新 grant `trips` 的 insert 或 `participants` 的 insert／update；旅費一律經 `save_expense()` 連同分攤與代購一起寫；
   `keep_one_member` 觸發器擋最後一位成員離開，`sync_member_name` 讓成員名字固定是帳號名稱
 - **同時編輯**：改內容一律帶 version（樂觀鎖），版本不符要丟 `ConflictError` 讓畫面走 `saveWithConflict()`；
   寫入一律經 `trip` store 的 `mutate()`（成功後會廣播通知其他人並重讀）；拖曳排序只改 `day`／`sort_key`、子項目打勾只改 `done`，都不檢查版本
@@ -43,7 +44,7 @@ npm run build        # vue-tsc 型別檢查 + vite build 到 dist/
 
 ## 目錄地圖
 
-- `src/lib/split.ts`：分攤（平分／指定金額）、淨額、最少轉帳、每人摘要的**唯一來源**（純函式），測試 `split.test.ts`
+- `src/lib/split.ts`：分攤（平分／指定金額）、代購、淨額、最少轉帳、每人摘要、代購待收的**唯一來源**（純函式），測試 `split.test.ts`
 - `src/lib/category.ts`：行程類型與預約狀態的文字、預設值、卡片上點標籤的切換，要與 schema 的 `spots.category` check 和 `spots_booking_fits_category` 一致
 - `src/lib/money.ts`：幣別清單、小數位數、換算、金額格式與解析（`parseSum` 可輸入加法）；`format.ts`：日期與旅程天數；`maps.ts`：Google 地圖連結（只用連結或地址，都沒有就不給）；
   `flight.ts`：航班號碼整理、航班摘要（`flight_no` 格式要與 schema 的 check 一致）；`order.ts`：排序值（取中間值）
@@ -58,12 +59,12 @@ npm run build        # vue-tsc 型別檢查 + vite build 到 dist/
 - `src/stores/trip.ts`：目前開啟的旅程、讀取／重讀、`mutate()`、拖曳的樂觀更新、彙整的 computed（含 `me`：自己在這趟的旅伴資料）
 - `src/composables/useConflict.ts`：`saveWithConflict()`，別人改過時問「用我的覆蓋／看最新版本」
 - `src/router.ts`：`/` 我的旅程（`HomeView` 向伺服器讀自己參加的旅程）、`/trips/:tripId`（`TripLayout` 底下行程／旅費／設定）
-- 成員：`src/views/TripSettingsView.vue` 的旅伴區塊（加入、移出、只記帳旅伴換成帳號、退出）、`src/components/MemberPickerModal.vue`（列出註冊使用者）、
+- 成員：`src/views/TripSettingsView.vue` 的旅伴區塊（加入、移出、已移出的加回或刪掉、退出）、`src/components/MemberPickerModal.vue`（列出註冊使用者）、
   `TripFormModal.vue` 建立旅程時勾選成員
 - 行程：`src/views/ItineraryView.vue`（已過的天收合）、`src/components/SpotList.vue`（SortableJS，拖完先把 DOM 放回原位再改資料）、`SpotCard.vue`、`SpotFormModal.vue`；
   子項目：`SpotItems.vue`（卡片裡的子清單，各行程各自一組 Sortable）、`ItemFormModal.vue`、`src/composables/useExpanded.ts`（展開狀態）；
   行程的旅費：`SpotExpensesModal.vue`（依 `expenses.spot_id`，從行程記帳以 `ExpenseFormModal` 的 `preset` 帶入行程與日期）
-- 旅費：`src/views/ExpensesView.vue`、`src/components/ExpenseFormModal.vue`、`TransferModal.vue`
+- 旅費：`src/views/ExpensesView.vue`（含代購待收）、`src/components/ExpenseFormModal.vue`（分攤與代購）、`TransferModal.vue`
 - `supabase/schema.sql`：資料表、RLS、`current_account_id()`／`my_trip_ids()`、`bump_version()`、`create_trip()`／`add_trip_member()`／`remove_trip_member()`／`save_expense()`、帳號函式
 - `.github/workflows/deploy.yml`：測試、打包、部署 Pages；`keepalive.yml`：每日不帶登入憑證 GET trips，預期 `[]`
 - `vite.config.ts`：`base` 依 `VITE_BASE`／`GITHUB_REPOSITORY` 決定、PWA manifest
@@ -74,12 +75,13 @@ npm run build        # vue-tsc 型別檢查 + vite build 到 dist/
 - 幣別與匯率（每趟一個當地幣別、旅費可記當地幣別或新台幣、結算用目前匯率）→ README「幣別與匯率」、`toTwd`
 - 平分無條件進位、零頭由付錢的人多收；指定金額加總要等於總額、各自換算後四捨五入 → README「分攤」、`expenseDues`
 - 實際扣款（外幣旅費照帳單金額換算，指定金額時依比例分配且加總恰好等於扣款）→ README「實際扣款」、`expenseDues`／`expenseTwd`
-- 行程類型與預約狀態（預設「還沒」、「無需」不顯示、口袋名單與已過的天不算待辦）→ README「類型與預約狀態」、`src/lib/category.ts`
+- 行程類型與預約提醒（預設不提醒、住宿預設提醒、餐廳的現場排隊存成 none、口袋名單與已過的天不算待辦）→ README「類型與預約狀態」、`src/lib/category.ts`
 - 航班、已過的天、地圖圖示何時顯示 → README「功能」的行程段落
+- 代購（不進旅伴結算、平分時先扣掉、實際扣款一起依比例分配、代購待收）→ README「代購」、`expenseDues` 的 `proxyDues`／`proxyCollections`
 - 要收／要付（全體加總必為 0）與最少轉帳 → README「要收／要付與轉帳建議」、`netBalances`／`simplifyDebts`
 - 同時編輯的行為 → README「同時編輯」
 - 子項目（一個行程底下多間店）→ README「功能」的行程段落
-- 帳號與成員（一定要登入、誰能加人移人、只記帳的旅伴、至少一位成員、忘記密碼與把人加回旅程的 SQL）→ README「帳號與成員」
+- 帳號與成員（一定要登入、誰能加人移人、已移出的人、至少一位成員、忘記密碼與把人加回旅程的 SQL）→ README「帳號與成員」
 - 改了上述任一規則，README 對應段落要同步更新
 
 ## 部署

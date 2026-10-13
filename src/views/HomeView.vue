@@ -54,10 +54,10 @@ function badge(t: TripSummary): { text: string; cls: string } {
 const creating = ref(false)
 const saving = ref(false)
 
-async function create(input: TripInput, members: Id[], names: string[]) {
+async function create(input: TripInput, members: Id[]) {
   saving.value = true
   try {
-    const id = await repo.createTrip(input, members, names)
+    const id = await repo.createTrip(input, members)
     creating.value = false
     toast.success(members.length ? '旅程建好了，勾選的旅伴登入後就看得到' : '旅程建好了，可以到「設定」把旅伴加進來')
     await router.push(`/trips/${id}`)

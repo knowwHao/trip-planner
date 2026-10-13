@@ -1,10 +1,10 @@
 <script setup lang="ts">
 import { computed, reactive, ref, watch } from 'vue'
-import { Trash2 } from 'lucide-vue-next'
+import { Plus, Trash2, X } from 'lucide-vue-next'
 import ModalSheet from './ModalSheet.vue'
 import StaleNotice from './StaleNotice.vue'
 import ParticipantAvatar from './ParticipantAvatar.vue'
-import type { Expense, ExpenseInput, Id, ShareInput, SplitMode } from '@/types'
+import type { Expense, ExpenseInput, Id, ProxyInput, ShareInput, SplitMode } from '@/types'
 import { repo } from '@/data'
 import { useTripStore } from '@/stores/trip'
 import { saveWithConflict } from '@/composables/useConflict'
@@ -24,7 +24,9 @@ const emit = defineEmits<{ close: [] }>()
 
 const store = useTripStore()
 const trip = computed(() => store.trip!)
-const people = computed(() => store.participants)
+/** 編輯時這筆已經用到的旅伴，被移出了也要列出來，不然改不到他的部分 */
+const involved = ref<Set<Id>>(new Set())
+const people = computed(() => store.participants.filter((p) => p.account_id || involved.value.has(p.id)))
 
 const form = reactive({
   title: '',
@@ -39,6 +41,8 @@ const form = reactive({
   mode: 'even' as SplitMode,
   checked: [] as Id[],
   custom: {} as Record<Id, string>,
+  /** 代購：幫不是旅伴的人買的部分 */
+  proxies: [] as { name: string; amount: string }[],
 })
 const base = ref<Expense | null>(null)
 const touched = ref(false)
@@ -52,6 +56,8 @@ function defaultDate() {
 function fill(e: Expense | null | undefined) {
   base.value = e ?? null
   const shares = e ? (store.data?.shares ?? []).filter((s) => s.expense_id === e.id) : []
+  const proxies = e ? (store.data?.proxies ?? []).filter((x) => x.expense_id === e.id) : []
+  involved.value = new Set(e ? [e.payer_id, ...shares.map((s) => s.participant_id)] : [])
   Object.assign(form, {
     title: e?.title ?? props.preset?.title ?? '',
     amount: e ? String(e.amount) : '',
@@ -64,6 +70,7 @@ function fill(e: Expense | null | undefined) {
     mode: e?.split_mode ?? 'even',
     checked: e ? shares.map((s) => s.participant_id) : people.value.map((p) => p.id),
     custom: Object.fromEntries(shares.filter((s) => s.amount !== null).map((s) => [s.participant_id, String(s.amount)])),
+    proxies: proxies.map((x) => ({ name: x.name, amount: String(x.amount) })),
   })
   touched.value = false
 }
@@ -85,7 +92,15 @@ const foreign = computed(() => form.currency !== 'TWD')
 const charged = computed(() => (foreign.value ? parseAmount(form.charged, 'TWD') : null))
 /** 實際扣款換算出來的匯率，只用來顯示 */
 const chargedRate = computed(() => (charged.value && amount.value && amount.value > 0 ? charged.value / amount.value : null))
-const remaining = computed(() => (amount.value && amount.value > 0 ? customRemaining(amount.value, customValues.value, form.currency) : 0))
+const proxyValues = computed(() => form.proxies.map((x) => parseSum(x.amount, form.currency)))
+// 名字和金額都空著的代購列當作沒有
+const proxies = computed<ProxyInput[]>(() =>
+  form.proxies.flatMap((x, i) => (x.name.trim() || x.amount.trim() ? [{ name: x.name.trim(), amount: proxyValues.value[i] ?? NaN }] : [])),
+)
+const proxySum = computed(() => (amount.value && amount.value > 0 ? amount.value - customRemaining(amount.value, proxies.value.map((x) => x.amount), form.currency) : 0))
+const remaining = computed(() =>
+  amount.value && amount.value > 0 ? customRemaining(amount.value, [...customValues.value, ...proxies.value.map((x) => x.amount)], form.currency) : 0,
+)
 
 const shares = computed<ShareInput[]>(() =>
   form.mode === 'even'
@@ -101,6 +116,7 @@ const preview = computed(() =>
         { amount: amount.value, currency: form.currency, split_mode: form.mode, twd_amount: charged.value && charged.value > 0 ? charged.value : null },
         shares.value,
         trip.value,
+        proxies.value.filter((x) => x.name && x.amount > 0),
       )
     : null,
 )
@@ -115,10 +131,16 @@ const errors = computed(() => {
     e.charged = '請輸入正整數，或留空用旅程匯率換算'
   }
   if (!form.payer) e.payer = '請選擇誰付的'
-  if (!shares.value.length) e.split = form.mode === 'even' ? '至少勾一個人' : '至少填一個人的金額'
-  if (form.mode === 'custom') {
+  if (proxies.value.some((x) => !x.name)) e.proxies = '代購要填是幫誰買的'
+  else if (proxies.value.some((x) => [...x.name].length > 20)) e.proxies = '名字最多 20 個字'
+  else if (proxies.value.some((x) => !(x.amount > 0))) e.proxies = '代購金額格式不對'
+  if (!shares.value.length && !proxies.value.length) e.split = form.mode === 'even' ? '至少勾一個人' : '至少填一個人的金額'
+  else if (form.mode === 'custom') {
     if (customValues.value.some((v) => v !== null && !(v >= 0))) e.split = '有金額格式不對'
     else if (remaining.value !== 0) e.split = remaining.value > 0 ? `還差 ${formatMoney(remaining.value, form.currency)} 沒分配` : `多分配了 ${formatMoney(-remaining.value, form.currency)}`
+  } else if (amount.value && !e.proxies) {
+    if (shares.value.length && proxySum.value >= amount.value) e.split = '代購加起來要小於總額，剩下的才給勾選的人平分'
+    else if (!shares.value.length && proxySum.value !== amount.value) e.split = '沒勾人時，代購加起來要剛好等於總額'
   }
   return e
 })
@@ -139,12 +161,8 @@ function splitRemaining() {
   })
 }
 
-/** 幫別人買東西最常見的情況：其他人填好自己那幾項，剩下的都是付錢的人自己的 */
-function remainingToPayer() {
-  if (!form.payer || remaining.value <= 0) return
-  const current = parseSum(form.custom[form.payer] ?? '', form.currency)
-  const base = current && current > 0 ? toMinor(current, form.currency) : 0
-  form.custom[form.payer] = String(fromMinor(base + toMinor(remaining.value, form.currency), form.currency))
+function addProxy() {
+  form.proxies.push({ name: '', amount: '' })
 }
 
 const payerName = computed(() => store.participantName(form.payer))
@@ -174,17 +192,22 @@ async function submit() {
     twd_amount: foreign.value ? charged.value : null,
   }
   const list = shares.value
+  const proxyList = proxies.value
   saving.value = true
   try {
     const target = base.value
     if (!target) {
-      await store.mutate(() => repo.saveExpense(fields, list))
+      await store.mutate(() => repo.saveExpense(fields, list, proxyList))
       emit('close')
       return
     }
     const outcome = await saveWithConflict('筆旅費', (useLatest) =>
       store.mutate(async () => {
-        await repo.saveExpense({ ...fields, id: target.id, version: useLatest ? (latest.value?.version ?? target.version) : target.version }, list)
+        await repo.saveExpense(
+          { ...fields, id: target.id, version: useLatest ? (latest.value?.version ?? target.version) : target.version },
+          list,
+          proxyList,
+        )
       }),
     )
     if (outcome === 'saved' || outcome === 'gone') emit('close')
@@ -199,7 +222,7 @@ async function submit() {
 async function remove() {
   const target = base.value
   if (!target) return
-  const ok = await confirmDialog({ title: `刪除「${target.title}」？`, message: '這筆的分攤會一起刪掉，大家的帳會重算。', confirmText: '刪除', danger: true })
+  const ok = await confirmDialog({ title: `刪除「${target.title}」？`, message: '這筆的分攤與代購會一起刪掉，大家的帳會重算。', confirmText: '刪除', danger: true })
   if (!ok) return
   try {
     await store.mutate(() => repo.deleteExpense(target.id))
@@ -321,16 +344,39 @@ async function remove() {
               autocomplete="off"
             />
           </div>
-          <p class="text-xs text-ink-400">幫別人買的填他那幾項的金額，可以直接輸入加法（例如 1200+3400）；剩下的用下面的按鈕分配</p>
-          <div class="flex items-center justify-between gap-2 pt-1">
-            <span class="num text-xs" :class="remaining === 0 ? 'text-sea-600 dark:text-sea-400' : 'text-amber-600 dark:text-amber-300'">
-              {{ remaining === 0 ? '金額剛好分完' : remaining > 0 ? `還剩 ${formatMoney(remaining, form.currency)}` : `多了 ${formatMoney(-remaining, form.currency)}` }}
-            </span>
-            <div v-if="remaining > 0" class="flex flex-wrap justify-end gap-x-3 gap-y-1">
-              <button v-if="form.payer" type="button" class="text-xs font-semibold text-sea-700 dark:text-sea-300" @click="remainingToPayer">剩下的都算{{ payerName }}的</button>
-              <button type="button" class="text-xs font-semibold text-sea-700 dark:text-sea-300" @click="splitRemaining">剩下的平分給空白的人</button>
-            </div>
+          <p class="text-xs text-ink-400">填每個人那幾項的金額，可以直接輸入加法（例如 1200+3400）；幫不是旅伴的人買的加在下面的代購</p>
+        </div>
+
+        <div class="mt-4 rounded-2xl border border-dashed border-ink-200 p-3 dark:border-ink-700">
+          <p class="text-sm font-bold">代購<span class="ml-1 text-xs font-normal text-ink-400">幫不是旅伴的人買的，不算進大家的帳</span></p>
+          <div v-for="(x, i) in form.proxies" :key="i" class="mt-2 flex items-center gap-2">
+            <label :for="`exp-proxy-name-${i}`" class="sr-only">代購對象</label>
+            <input :id="`exp-proxy-name-${i}`" v-model="x.name" class="input min-w-0 flex-1 py-2" maxlength="20" placeholder="幫誰買，例如媽媽" autocomplete="off" />
+            <label :for="`exp-proxy-amount-${i}`" class="sr-only">代購金額</label>
+            <input
+              :id="`exp-proxy-amount-${i}`"
+              v-model="x.amount"
+              class="input num w-28 shrink-0 py-2 text-right"
+              inputmode="text"
+              placeholder="0"
+              autocomplete="off"
+            />
+            <button type="button" class="icon-btn -mr-2 shrink-0" :aria-label="`刪掉第 ${i + 1} 筆代購`" @click="form.proxies.splice(i, 1)"><X class="size-4" /></button>
           </div>
+          <p v-if="touched && errors.proxies" class="mt-1 text-xs text-rose-500">{{ errors.proxies }}</p>
+          <button type="button" class="mt-2 flex items-center gap-1 text-sm font-semibold text-sea-700 dark:text-sea-300" @click="addProxy">
+            <Plus class="size-4" />{{ form.proxies.length ? '再加一位' : '幫不是旅伴的人代購' }}
+          </button>
+          <p v-if="preview && preview.proxyDues.some((d) => d.due > 0)" class="num mt-1.5 text-xs leading-relaxed text-ink-400">
+            {{ payerName }} 之後自己跟對方收：{{ preview.proxyDues.map((d) => `${d.name} ${formatMoney(d.due)}`).join('、') }}
+          </p>
+        </div>
+
+        <div v-if="form.mode === 'custom'" class="mt-3 flex items-center justify-between gap-2">
+          <span class="num text-xs" :class="remaining === 0 ? 'text-sea-600 dark:text-sea-400' : 'text-amber-600 dark:text-amber-300'">
+            {{ remaining === 0 ? '金額剛好分完' : remaining > 0 ? `還剩 ${formatMoney(remaining, form.currency)}` : `多了 ${formatMoney(-remaining, form.currency)}` }}
+          </span>
+          <button v-if="remaining > 0" type="button" class="text-xs font-semibold text-sea-700 dark:text-sea-300" @click="splitRemaining">剩下的平分給空白的人</button>
         </div>
         <p v-if="touched && errors.split" class="mt-1 text-xs text-rose-500">{{ errors.split }}</p>
         <p v-else-if="preview && preview.dues.length" class="num mt-2 text-xs leading-relaxed text-ink-400">

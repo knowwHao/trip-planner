@@ -3,7 +3,7 @@ import { googleMapsUrl, safeUrl } from './maps'
 import { evenKeys, keyBetween } from './order'
 import { currencyDigits, formatMoney, parseAmount, parseSum, toTwd } from './money'
 import { addDays, dayDate, formatRange, tripDayCount } from './format'
-import { bookingForCategory, bookingLabel, defaultBooking, nextBooking } from './category'
+import { bookingForCategory, bookingLabel, defaultBooking, nextBooking, remindLabel } from './category'
 import { flightSummary, hasFlight, normalizeFlightNo } from './flight'
 
 describe('maps', () => {
@@ -80,30 +80,40 @@ describe('format', () => {
 })
 
 describe('category', () => {
-  it('預約狀態的文字依類型而定', () => {
+  it('預約狀態的文字依類型而定；只有餐廳有「現場排隊」', () => {
     expect(bookingLabel('food', 'todo')).toBe('未訂位')
     expect(bookingLabel('sight', 'done')).toBe('已買票')
+    expect(bookingLabel('food', 'none')).toBe('現場排隊')
+    expect(bookingLabel('sight', 'none')).toBeNull()
     expect(bookingLabel('shop', 'todo')).toBeNull()
     expect(bookingLabel('food', null)).toBeNull()
+    expect(remindLabel('transport')).toBe('提醒訂票')
+    expect(remindLabel('shop')).toBeNull()
   })
 
-  it('新增時有預約狀態的類型預設「還沒」', () => {
-    expect(defaultBooking('food')).toBe('todo')
+  it('新增時只有住宿預設要提醒，其他預設不提醒', () => {
+    expect(defaultBooking('stay')).toBe('todo')
+    expect(defaultBooking('food')).toBeNull()
+    expect(defaultBooking('sight')).toBeNull()
     expect(defaultBooking('shop')).toBeNull()
   })
 
-  it('換類型時沿用狀態，新類型不支援就換成預設', () => {
+  it('換類型時沿用提醒，新類型不支援就換成預設', () => {
     expect(bookingForCategory('sight', 'done')).toBe('done')
     expect(bookingForCategory('stay', 'none')).toBe('todo')
+    expect(bookingForCategory('stay', null)).toBe('todo')
     expect(bookingForCategory('shop', 'done')).toBeNull()
-    expect(bookingForCategory('food', null)).toBe('todo')
+    expect(bookingForCategory('food', null)).toBeNull()
+    expect(bookingForCategory('food', 'none')).toBe('none')
+    expect(bookingForCategory('sight', 'none')).toBeNull()
   })
 
-  it('點標籤只在還沒與已完成之間切換，沒設定的先變成還沒', () => {
+  it('點標籤只在還沒與已完成之間切換；沒提醒或現場排隊點了不變', () => {
     expect(nextBooking('food', 'todo')).toBe('done')
     expect(nextBooking('food', 'done')).toBe('todo')
-    expect(nextBooking('food', null)).toBe('todo')
     expect(nextBooking('stay', 'done')).toBe('todo')
+    expect(nextBooking('food', null)).toBeNull()
+    expect(nextBooking('food', 'none')).toBeNull()
     expect(nextBooking('shop', null)).toBeNull()
   })
 })

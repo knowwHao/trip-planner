@@ -3,10 +3,12 @@ import type {
   AccountSession,
   Expense,
   ExpenseInput,
+  ExpenseProxy,
   ExpenseShare,
   Id,
   Participant,
   PinResult,
+  ProxyInput,
   ShareInput,
   Spot,
   SpotInput,
@@ -42,6 +44,7 @@ import { randomId, randomKey, seedDemoTrip } from './demoSeed'
 const DB_KEY = 'trip-demo-db-v1'
 
 type StoredShare = ExpenseShare & { trip_id: Id }
+type StoredProxy = ExpenseProxy & { trip_id: Id; sort_order: number }
 
 /** Demo 只存在這個瀏覽器，密碼直接存明碼；真正的資料庫存的是加鹽雜湊 */
 interface DemoAccount {
@@ -60,12 +63,13 @@ export interface DemoDb {
   items: SpotItem[]
   expenses: Expense[]
   shares: StoredShare[]
+  proxies: StoredProxy[]
   transfers: Transfer[]
   accounts: DemoAccount[]
 }
 
 export function emptyDb(): DemoDb {
-  return { trips: [], participants: [], spots: [], items: [], expenses: [], shares: [], transfers: [], accounts: [] }
+  return { trips: [], participants: [], spots: [], items: [], expenses: [], shares: [], proxies: [], transfers: [], accounts: [] }
 }
 
 const NO_FLIGHT = { airline: '', flight_no: '', dep_airport: '', arr_airport: '', arr_time: null, arr_day_offset: 0 }
@@ -91,6 +95,7 @@ function readStorage(): DemoDb | null {
     // 加入子項目與帳號前存下的示範資料
     db.items ??= []
     db.accounts ??= []
+    db.proxies ??= []
     // 與 schema.sql 一樣拿掉旅程連結；舊的示範旅程沒有成員，誰都看不到
     for (const t of db.trips) Reflect.deleteProperty(t, 'token')
     for (const p of db.participants) p.account_id ??= null
@@ -151,16 +156,29 @@ export class DemoRepo implements TripRepository {
     return list.filter((r) => r.trip_id === tripId)
   }
 
-  /** 開一趟示範旅程，登入的人是成員；回傳旅程 id */
+  /** 開一趟示範旅程，登入的人和三位示範帳號是成員；回傳旅程 id */
   createDemoTrip(): Id {
     const acc = this.me()
-    const { trip, data } = seedDemoTrip({ id: acc.id, name: acc.name })
+    // 示範旅伴也要是帳號；名字已被註冊就直接用那個帳號，沒有就建一個沒人知道密碼的
+    const others = ['小華', '阿傑', '小美', '小明']
+      .filter((n) => n !== acc.name)
+      .slice(0, 3)
+      .map((name) => {
+        let a = this.db.accounts.find((x) => x.name.toLowerCase() === name.toLowerCase())
+        if (!a) {
+          a = { id: randomId(), name, pin: randomKey(), key: randomKey(), failed: 0, locked_until: null }
+          this.db.accounts.push(a)
+        }
+        return { id: a.id, name: a.name }
+      })
+    const { trip, data } = seedDemoTrip({ id: acc.id, name: acc.name }, others)
     this.db.trips.push(trip)
     this.db.participants.push(...data.participants)
     this.db.spots.push(...data.spots)
     this.db.items.push(...data.items)
     this.db.expenses.push(...data.expenses)
     this.db.shares.push(...data.shares)
+    this.db.proxies.push(...data.proxies)
     this.db.transfers.push(...data.transfers)
     this.commit()
     return trip.id
@@ -192,21 +210,17 @@ export class DemoRepo implements TripRepository {
     return { id: randomId(), trip_id: tripId, account_id, name, sort_order, version: 1, created_at: now() }
   }
 
-  async createTrip(input: TripInput, members: Id[], names: string[]) {
+  async createTrip(input: TripInput, members: Id[]) {
     const acc = this.me()
     const t = now()
     const trip: Trip = { ...input, id: randomId(), version: 1, created_at: t, updated_at: t }
     this.db.trips.push(trip)
-    // 與 create_trip() 相同：自己排第一，接著是勾選的成員，最後是只有名字的旅伴；名字重複的略過
+    // 與 create_trip() 相同：自己排第一，接著是勾選的成員
     const rows = [this.participant(trip.id, acc.name, 0, acc.id)]
     const taken = (name: string) => rows.some((r) => r.name === name)
     members.forEach((id, i) => {
       const a = this.db.accounts.find((x) => x.id === id)
       if (a && !taken(a.name)) rows.push(this.participant(trip.id, a.name, i + 1, a.id))
-    })
-    names.forEach((raw, i) => {
-      const name = raw.trim()
-      if (name && !taken(name)) rows.push(this.participant(trip.id, name, 101 + i, null))
     })
     this.db.participants.push(...rows)
     this.commit()
@@ -227,6 +241,9 @@ export class DemoRepo implements TripRepository {
       items: this.ofTrip(this.db.items, id).sort((a, b) => a.sort_key - b.sort_key),
       expenses: this.ofTrip(this.db.expenses, id),
       shares: this.ofTrip(this.db.shares, id).map(({ trip_id: _t, ...s }) => s),
+      proxies: this.ofTrip(this.db.proxies, id)
+        .sort((a, b) => a.sort_order - b.sort_order)
+        .map(({ trip_id: _t, sort_order: _o, ...p }) => p),
       transfers: this.ofTrip(this.db.transfers, id),
     })
   }
@@ -251,6 +268,7 @@ export class DemoRepo implements TripRepository {
     this.db.items = keep(this.db.items)
     this.db.expenses = keep(this.db.expenses)
     this.db.shares = keep(this.db.shares)
+    this.db.proxies = keep(this.db.proxies)
     this.db.transfers = keep(this.db.transfers)
     this.commit()
   }
@@ -281,29 +299,6 @@ export class DemoRepo implements TripRepository {
     if (!p) throw new NoAccessError()
     if (p.account_id && !this.ofTrip(this.db.participants, trip.id).some((x) => x.account_id && x.id !== p.id)) throw new LastMemberError()
     p.account_id = null
-    this.commit()
-  }
-
-  async addParticipants(rows: { name: string; sort_order: number }[]) {
-    const trip = this.guard()
-    const existing = new Set(this.ofTrip(this.db.participants, trip.id).map((p) => p.name))
-    if (rows.some((r) => existing.has(r.name.trim()))) throw new Error('已經有同名的旅伴')
-    for (const r of rows) this.db.participants.push(this.participant(trip.id, r.name.trim(), r.sort_order, null))
-    this.commit()
-  }
-
-  async renameParticipant(id: Id, version: number, name: string) {
-    const trip = this.guard()
-    const p = this.db.participants.find((x) => x.id === id && x.trip_id === trip.id)
-    if (!p) throw new RowMissingError()
-    if (p.version !== version) throw new ConflictError()
-    // 與 sync_member_name 觸發器相同：成員的名字固定是帳號名稱
-    if (p.account_id) return
-    if (this.db.participants.some((x) => x.trip_id === trip.id && x.id !== id && x.name === name.trim())) {
-      throw new Error('已經有同名的旅伴')
-    }
-    p.name = name.trim()
-    p.version++
     this.commit()
   }
 
@@ -411,13 +406,21 @@ export class DemoRepo implements TripRepository {
     this.commit()
   }
 
-  async saveExpense(input: ExpenseInput, shares: ShareInput[]) {
+  async saveExpense(input: ExpenseInput, shares: ShareInput[], proxies: ProxyInput[]) {
     const trip = this.guard()
-    if (input.currency !== 'TWD' && input.currency !== trip.currency) throw new Error('資料格式不符，請檢查後再試')
-    if (!shares.length) throw new Error('資料格式不符，請檢查後再試')
+    const bad = () => new Error('資料格式不符，請檢查後再試')
+    const code = input.currency
+    if (code !== 'TWD' && code !== trip.currency) throw bad()
+    if (!shares.length && !proxies.length) throw bad()
+    if (proxies.some((p) => !p.name.trim() || [...p.name.trim()].length > 20 || !(p.amount > 0))) throw bad()
+    // 與 save_expense() 相同：指定金額時旅伴加代購要等於總額；平分時代購要留一些給旅伴分，沒有旅伴時要等於總額
+    const total = toMinor(input.amount, code)
+    const proxySum = proxies.reduce((s, p) => s + toMinor(p.amount, code), 0)
     if (input.split_mode === 'custom') {
-      const sum = shares.reduce((s, x) => s + toMinor(x.amount ?? NaN, input.currency), 0)
-      if (sum !== toMinor(input.amount, input.currency)) throw new Error('資料格式不符，請檢查後再試')
+      const sum = shares.reduce((s, x) => s + toMinor(x.amount ?? NaN, code), 0)
+      if (sum + proxySum !== total) throw bad()
+    } else if (shares.length ? proxySum >= total : proxySum !== total) {
+      throw bad()
     }
     const ids = new Set(this.ofTrip(this.db.participants, trip.id).map((p) => p.id))
     if (!ids.has(input.payer_id) || shares.some((s) => !ids.has(s.participant_id))) {
@@ -444,6 +447,10 @@ export class DemoRepo implements TripRepository {
         amount: input.split_mode === 'custom' ? s.amount : null,
       })
     }
+    this.db.proxies = this.db.proxies.filter((p) => p.expense_id !== id)
+    proxies.forEach((p, i) =>
+      this.db.proxies.push({ id: randomId(), expense_id: id, trip_id: trip.id, name: p.name.trim(), amount: p.amount, sort_order: i }),
+    )
     this.commit()
     return id
   }
@@ -452,6 +459,7 @@ export class DemoRepo implements TripRepository {
     const trip = this.guard()
     this.db.expenses = this.db.expenses.filter((e) => !(e.id === id && e.trip_id === trip.id))
     this.db.shares = this.db.shares.filter((s) => s.expense_id !== id)
+    this.db.proxies = this.db.proxies.filter((p) => p.expense_id !== id)
     this.commit()
   }
 

@@ -37,19 +37,19 @@ function addFirst() {
   emit('item-edit', null)
 }
 const category = computed(() => categoryInfo(props.spot.category))
-// 「不需要」不顯示標籤，畫面比較乾淨；還沒設定的顯示虛線提示，點了開始設定
+// 只有打開提醒的才有標籤（點了在還沒與已完成之間切換）；餐廳的現場排隊是不能點的灰色標籤
 const status = computed(() => {
-  if (!category.value.booking) return null
   const b = props.spot.booking
-  if (b === 'none') return null
-  const next = bookingLabel(props.spot.category, nextBooking(props.spot.category, b))
-  if (b === null) return { text: '設定預約', cls: 'border border-dashed border-ink-300 text-ink-400 dark:border-ink-600', next }
-  return { text: bookingLabel(props.spot.category, b)!, cls: b === 'todo' ? 'chip-open' : 'chip-done', next }
+  const text = bookingLabel(props.spot.category, b)
+  if (!text) return null
+  const next = nextBooking(props.spot.category, b)
+  if (!next) return { text, cls: 'chip-muted', next: null }
+  return { text, cls: b === 'todo' ? 'chip-open' : 'chip-done', next: bookingLabel(props.spot.category, next) }
 })
 </script>
 
 <template>
-  <div class="card p-1.5 pr-2" :class="!draggable && 'pl-3'">
+  <div class="card p-1.5" :class="!draggable && 'pl-3'">
     <div class="flex items-stretch gap-1">
       <button
         v-if="draggable"
@@ -75,31 +75,32 @@ const status = computed(() => {
         </p>
         <p v-if="spot.note" class="mt-1 line-clamp-3 text-sm whitespace-pre-line text-ink-600 dark:text-ink-200">{{ spot.note }}</p>
       </button>
-      <div class="flex w-16 shrink-0 flex-col items-center justify-center gap-1 py-1">
-        <button
-          v-if="status"
-          type="button"
-          class="chip justify-center px-2 whitespace-nowrap transition active:scale-95"
-          :class="status.cls"
-          :aria-label="`${spot.title}：${status.text}，點一下改成${status.next}`"
-          :title="`點一下改成「${status.next}」`"
-          @click="emit('booking')"
-        >
-          {{ status.text }}
-        </button>
-        <a
-          v-if="mapUrl"
-          :href="mapUrl"
-          target="_blank"
-          rel="noopener noreferrer"
-          class="flex w-12 flex-col items-center justify-center gap-0.5 rounded-2xl py-1.5 text-[11px] font-semibold text-sea-700 hover:bg-sea-100 dark:text-sea-300 dark:hover:bg-sea-400/10"
-          :aria-label="`在 Google 地圖開啟 ${spot.title}`"
-        >
-          <Navigation class="size-4" />地圖
-        </a>
-      </div>
+      <!-- 地圖固定大小、垂直置中，卡片高度只跟著內容行數變 -->
+      <a
+        v-if="mapUrl"
+        :href="mapUrl"
+        target="_blank"
+        rel="noopener noreferrer"
+        class="flex size-10 shrink-0 items-center justify-center self-center rounded-2xl text-sea-700 hover:bg-sea-100 dark:text-sea-300 dark:hover:bg-sea-400/10"
+        :aria-label="`在 Google 地圖開啟 ${spot.title}`"
+        title="在 Google 地圖開啟"
+      >
+        <Navigation class="size-5" />
+      </a>
     </div>
-    <div v-if="showItems || expenses.length" class="ml-8 flex flex-wrap items-center gap-x-1">
+    <div v-if="status || showItems || expenses.length" class="flex flex-wrap items-center gap-x-1 gap-y-0.5 pb-0.5" :class="draggable ? 'ml-8' : 'ml-0.5'">
+      <button
+        v-if="status?.next"
+        type="button"
+        class="chip mx-1 whitespace-nowrap transition active:scale-95"
+        :class="status.cls"
+        :aria-label="`${spot.title}：${status.text}，點一下改成${status.next}`"
+        :title="`點一下改成「${status.next}」`"
+        @click="emit('booking')"
+      >
+        {{ status.text }}
+      </button>
+      <span v-else-if="status" class="mx-1 whitespace-nowrap" :class="status.cls">{{ status.text }}</span>
       <template v-if="showItems">
         <button
           v-if="items.length"
