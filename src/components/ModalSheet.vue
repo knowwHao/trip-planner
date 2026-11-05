@@ -1,6 +1,7 @@
 <script setup lang="ts">
-import { onBeforeUnmount, watch } from 'vue'
+import { onBeforeUnmount, toRef, watch } from 'vue'
 import { X } from 'lucide-vue-next'
+import { useScrollLock } from '@/composables/useScrollLock'
 
 const props = withDefaults(defineProps<{ open: boolean; title: string; wide?: boolean; dismissible?: boolean; top?: boolean }>(), {
   dismissible: true,
@@ -11,20 +12,18 @@ function onKey(e: KeyboardEvent) {
   if (e.key === 'Escape' && props.dismissible) emit('close')
 }
 
+useScrollLock(toRef(props, 'open'))
+
 watch(
   () => props.open,
   (open) => {
-    document.documentElement.style.overflow = open ? 'hidden' : ''
     if (open) window.addEventListener('keydown', onKey)
     else window.removeEventListener('keydown', onKey)
   },
   { immediate: true },
 )
 
-onBeforeUnmount(() => {
-  document.documentElement.style.overflow = ''
-  window.removeEventListener('keydown', onKey)
-})
+onBeforeUnmount(() => window.removeEventListener('keydown', onKey))
 </script>
 
 <template>
